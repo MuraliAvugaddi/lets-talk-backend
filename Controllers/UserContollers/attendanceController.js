@@ -8,7 +8,7 @@ const getFormattedDate = (d = new Date()) =>
 // --- 1. OFFLINE ATTENDANCE (Geofence + Late Check) ---
 const markAttendance = async (req, res) => {
   try {
-    const { userId, stage, batchTime, lat, lng } = req.body;
+    const { userId, stage, batchTime, lat, lng, language } = req.body;
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -69,6 +69,7 @@ const markAttendance = async (req, res) => {
         userName: user.name,
         userPhone: user.phone,
         userMode: "offline",
+        language: language || "English",
         status,
         markedAt: now,
         location: { lat, lng },
@@ -88,7 +89,7 @@ const markAttendance = async (req, res) => {
   }
 };
 
-// --- 2. ONLINE LIVE CLASS: RECORD JOIN (Upsert Safe) ---
+// --- 2. ONLINE LIVE CLASS: RECORD JOIN ---
 const joinOnlineClass = async (req, res) => {
   try {
     const { userId, language, stage, batchTime } = req.body;
@@ -146,7 +147,6 @@ const onlineClassHeartbeat = async (req, res) => {
     record.totalMinutesSpent += 1;
     record.lastActiveTime = new Date();
 
-    // If attended >= 45 mins in a 90-min class, automatically upgrade to Present
     if (record.totalMinutesSpent >= 45) {
       record.status = "Present";
     } else if (record.totalMinutesSpent >= 15) {
@@ -164,41 +164,96 @@ const onlineClassHeartbeat = async (req, res) => {
   }
 };
 
-// --- 4. ADMIN: GET FILTERED ATTENDANCE SHEET ---
+// --- 4. ADMIN: MASTER ATTENDANCE SHEET ---
 const getAttendanceSheet = async (req, res) => {
   try {
     const { date, stage, batchTime, mode, language } = req.query;
-    let query = {};
 
-    if (date) query.date = date;
-    if (stage) query.stage = stage;
-    if (batchTime) query.batchTime = batchTime;
-    if (mode && mode.toLowerCase() !== "all") query.userMode = mode.toLowerCase();
-    if (language && language.toLowerCase() !== "all") query.language = language;
+    let attendanceQuery = {};
 
-    const records = await Attendance.find(query).sort({ createdAt: -1 });
-    res.json(records);
+    // 1. Safe Date Matching (handles 19-8-2026 & 19-08-2026)
+    if (date) {
+      const parts = date.split("-");
+      if (parts.length === 3) {
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        const y = parseInt(parts[2], 10);
+        attendanceQuery.date = {
+          $regex: new RegExp(`^0?${d}-0?${m}-${y}$`),
+        };
+      } else {
+        attendanceQuery.date = date;
+      }
+    }
+
+    // 2. Stage Filter
+    if (stage && stage.toLowerCase() !== "all") {
+      attendanceQuery.stage = {
+        $regex: new RegExp(`^${stage.replace(/\s+/g, "\\s*")}$`, "i"),
+      };
+    }
+
+    // 3. Batch Filter
+    if (batchTime && batchTime.toLowerCase() !== "all") {
+      attendanceQuery.batchTime = {
+        $regex: new RegExp(`^${batchTime.replace(/\s+/g, "\\s*")}$`, "i"),
+      };
+    }
+
+    // 4. Mode Filter (Online/Offline)
+    if (mode && mode.toLowerCase() !== "all") {
+      attendanceQuery.userMode = {
+        $regex: new RegExp(`^${mode}$`, "i"),
+      };
+    }
+
+    // 5. Language Filter
+    if (language && language.toLowerCase() !== "all") {
+      attendanceQuery.language = {
+        $regex: new RegExp(`^${language}$`, "i"),
+      };
+    }
+
+    // Query attendance records for the selected filters
+    const attendances = await Attendance.find(attendanceQuery)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!attendances || attendances.length === 0) {
+      return res.status(200).json([]);
+    }
+
+    const formattedList = attendances.map((rec) => ({
+      userId: rec.userId,
+      userName: rec.userName || "Unknown",
+      userPhone: rec.userPhone || "No Phone",
+      userMode: rec.userMode || "offline",
+      status: rec.status || "Absent",
+      markedAt: rec.markedAt || rec.joinTime || null,
+      totalMinutes: rec.totalMinutesSpent || 0,
+      batchTime: rec.batchTime || "N/A",
+      stage: rec.stage || "General",
+      language: rec.language || "English",
+      date: rec.date,
+    }));
+
+    res.status(200).json(formattedList);
   } catch (error) {
-    console.error("Get Attendance Error:", error);
+    console.error("Get Master Attendance Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-// --- 5. ADMIN: GET ALL STUDENTS WITH MULTI-FILTER ---
-// @desc    Get All Students with Live Today's Attendance & Time Spent
-// @route   GET /api/admin/all-students
-// @access  Public / Admin
+// --- 5. ADMIN: GET ALL STUDENTS DIRECTORY ---
 const getAllStudentsFiltered = async (req, res) => {
   try {
     const { language, stage, mode } = req.query;
     let query = {};
 
-    // 1. Filter by Mode (Online / Offline)
     if (mode && mode.toLowerCase() !== "all") {
       query.mode = { $regex: new RegExp(`^${mode}$`, "i") };
     }
 
-    // 2. Filter by Language & Specific Stage
     if (
       language &&
       language.toLowerCase() !== "all" &&
@@ -221,7 +276,6 @@ const getAllStudentsFiltered = async (req, res) => {
     const now = new Date();
     const dateStr = getFormattedDate(now);
 
-    // 3. Attach today's live attendance info to each student
     const enrichedStudents = await Promise.all(
       students.map(async (student) => {
         const attendance = await Attendance.findOne({
@@ -234,7 +288,9 @@ const getAllStudentsFiltered = async (req, res) => {
           attendanceStatus: attendance ? attendance.status : "Absent",
           totalMinutesSpent: attendance ? attendance.totalMinutesSpent : 0,
           batchTime: attendance ? attendance.batchTime : "Not Joined",
-          markedAt: attendance ? attendance.markedAt || attendance.joinTime : null,
+          markedAt: attendance
+            ? attendance.markedAt || attendance.joinTime
+            : null,
         };
       })
     );
@@ -250,9 +306,6 @@ const getAllStudentsFiltered = async (req, res) => {
 };
 
 // --- 6. USER: GET PERSONAL ATTENDANCE HISTORY ---
-// @desc    Get Student Personal Attendance History
-// @route   GET /api/user/my-attendance
-// @access  Public / Protected
 const getMyAttendance = async (req, res) => {
   try {
     const { userId, language } = req.query;

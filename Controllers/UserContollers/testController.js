@@ -1,148 +1,170 @@
 const Test = require("../../Models/test");
 const Result = require("../../Models/result");
+const User = require("../../Models/users");
 
-// --- ADMIN: Create or Update a Test ---
+// --- 1. ADMIN: CREATE OR UPDATE TEST ---
 const updateTest = async (req, res) => {
   try {
-    const { language, stage, questions, isActive } = req.body;
-    
-    // Find existing test for this stage or create new
-    let test = await Test.findOne({ language, stage });
-    
-    if (test) {
-      test.questions = questions;
-      test.isActive = isActive;
-      await test.save();
-    } else {
-      test = await Test.create({ language, stage, questions, isActive });
+    const { language, stage, isActive, questions, durationMinutes } = req.body;
+
+    if (!language || !stage || !questions) {
+      return res.status(400).json({ message: "Missing required test fields" });
     }
-    
-    res.status(200).json({ message: "Test updated successfully", test });
+
+    const test = await Test.findOneAndUpdate(
+      { language, stage },
+      {
+        language,
+        stage,
+        isActive: isActive !== undefined ? isActive : true,
+        questions,
+        durationMinutes: durationMinutes || 25,
+      },
+      { upsert: true, new: true }
+    );
+
+    res.status(200).json({ message: "Test published successfully", test });
   } catch (error) {
     console.error("Update Test Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-// --- USER: Get Test (Checks if already taken) ---
-const getTest = async (req, res) => {
-  try {
-    const { language, stage, userId } = req.query; 
-    
-    const test = await Test.findOne({ language, stage });
-    
-    if (!test || !test.isActive) {
-      return res.status(404).json({ message: "No test scheduled currently." });
-    }
-
-    // 1. CHECK IF USER ALREADY COMPLETED THIS TEST
-    if (userId) {
-      const existingResult = await Result.findOne({ userId, language, stage });
-      if (existingResult) {
-        return res.json({
-          completed: true, 
-          score: existingResult.score,
-          total: existingResult.totalQuestions
-        });
-      }
-    }
-    
-    // 2. If not taken, send questions (WITHOUT CORRECT ANSWERS)
-    const safeQuestions = test.questions.map(q => ({
-      _id: q._id,
-      questionText: q.questionText,
-      options: q.options
-    }));
-
-    res.json({ 
-      completed: false, 
-      ...test._doc, 
-      questions: safeQuestions, 
-      durationMinutes: test.durationMinutes 
-    });
-
-  } catch (error) {
-    console.error("Get Test Error:", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-};
-
-// --- USER: Submit Test & Calculate Score ---
-const submitTest = async (req, res) => {
-  try {
-    // 1. Receive userPhone and other details
-    const { userId, userName, userPhone, userMode, language, stage, answers } = req.body;
-    
-    // Validate User ID
-    if (!userId) {
-      return res.status(400).json({ message: "User ID is missing. Please re-login." });
-    }
-
-    const test = await Test.findOne({ language, stage });
-    if (!test) {
-      return res.status(404).json({ message: "Test not found for this stage." });
-    }
-
-    let score = 0;
-    
-    // 2. Calculate Score
-    if (answers && answers.length > 0) {
-      answers.forEach(ans => {
-        const question = test.questions.id(ans.questionId);
-        if (question && question.correctOptionIndex === ans.selectedIndex) {
-          score++;
-        }
-      });
-    }
-
-    // 3. Save Result (NOW WITH PHONE NUMBER)
-    await Result.create({
-      userId, 
-      userName: userName || "Unknown Student", 
-      userPhone: userPhone || "N/A", // ⬅️ Saving Phone Number
-      userMode: userMode || "offline",         
-      language, 
-      stage, 
-      score, 
-      totalQuestions: test.questions.length
-    });
-
-    // 4. Return Score
-    res.json({ 
-      message: "Test Submitted", 
-      score: score, 
-      total: test.questions.length 
-    });
-
-  } catch (error) {
-    console.error("Submit Error:", error); 
-    res.status(500).json({ message: "Server Error during submission" });
-  }
-};
-
-// --- ADMIN: Get Results for a specific Stage ---
-const getStageResults = async (req, res) => {
-  try {
-    const { language, stage } = req.query;
-    // Sort by score descending (Highest marks first)
-    const results = await Result.find({ language, stage }).sort({ score: -1 });
-    res.json(results);
-  } catch (error) {
-    console.error("Get Results Error:", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-};
-
-// --- ADMIN: Delete Test ---
+// --- 2. ADMIN: DELETE ACTIVE TEST ---
 const deleteTest = async (req, res) => {
   try {
     const { language, stage } = req.body;
     await Test.findOneAndDelete({ language, stage });
-    res.json({ message: "Test Deleted Successfully" });
+    res.status(200).json({ message: "Test deleted successfully" });
   } catch (error) {
     console.error("Delete Test Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-module.exports = { updateTest, getTest, submitTest, getStageResults, deleteTest };
+// --- 3. ADMIN: GET ALL STUDENT RESULTS ---
+const getResults = async (req, res) => {
+  try {
+    const { language, stage } = req.query;
+    let query = {};
+    if (language) query.language = language;
+    if (stage) query.stage = stage;
+
+    const results = await Result.find(query).sort({ createdAt: -1 });
+    res.status(200).json(results);
+  } catch (error) {
+    console.error("Get Admin Results Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// --- 4. USER: GET TEST QUESTIONS ---
+const getTest = async (req, res) => {
+  try {
+    const { language, stage, userId } = req.query;
+
+    if (userId) {
+      const existingResult = await Result.findOne({ userId, language, stage });
+      if (existingResult) {
+        return res.status(200).json({
+          completed: true,
+          score: existingResult.score,
+          total: existingResult.totalQuestions,
+        });
+      }
+    }
+
+    const test = await Test.findOne({ language, stage, isActive: true });
+    if (!test) {
+      return res.status(404).json({ message: "No active test found" });
+    }
+
+    res.status(200).json({
+      completed: false,
+      durationMinutes: test.durationMinutes || 25,
+      questions: test.questions,
+    });
+  } catch (error) {
+    console.error("Get User Test Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// --- 5. USER: SUBMIT ANSWERS ---
+const submitTest = async (req, res) => {
+  try {
+    const { userId, userName, userPhone, userMode, language, stage, answers } =
+      req.body;
+
+    const test = await Test.findOne({ language, stage });
+    if (!test) {
+      return res.status(404).json({ message: "Test not found" });
+    }
+
+    let calculatedScore = 0;
+    const totalQuestions = test.questions.length;
+
+    answers.forEach((ans) => {
+      const q = test.questions.id(ans.questionId);
+      if (q && q.correctOptionIndex === ans.selectedIndex) {
+        calculatedScore++;
+      }
+    });
+
+    const result = await Result.create({
+      userId,
+      userName,
+      userPhone,
+      userMode: userMode || "offline",
+      language,
+      stage,
+      score: calculatedScore,
+      totalQuestions,
+      answers,
+    });
+
+    res.status(200).json({
+      message: "Test submitted successfully",
+      score: calculatedScore,
+      total: totalQuestions,
+      result,
+    });
+  } catch (error) {
+    console.error("Submit Test Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// --- 6. USER: GET PERSONAL TEST RESULTS ---
+const getMyTestResults = async (req, res) => {
+  try {
+    const { userId, language } = req.query;
+    if (!userId) {
+      return res.status(400).json({ message: "User ID is required" });
+    }
+
+    let query = { userId };
+    if (language && language.toLowerCase() !== "all") {
+      query.language = language;
+    }
+
+    const results = await Result.find(query).sort({ createdAt: -1 });
+
+    res.status(200).json({
+      total: results.length,
+      results,
+    });
+  } catch (error) {
+    console.error("Get My Test Results Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+module.exports = {
+  updateTest,
+  deleteTest,
+  getResults,
+  getTest,
+  submitTest,
+  getMyTestResults,
+};

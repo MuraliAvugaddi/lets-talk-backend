@@ -1,24 +1,23 @@
 const express = require("express");
 const router = express.Router();
 
-// 1. IMPORT deleteTest HERE ⬇️
-const { 
-  updateTest, 
-  getTest, 
-  submitTest, 
-  getStageResults, 
-  deleteTest // <--- Add this!
+const {
+  updateTest,
+  deleteTest,
+  getResults,
+  getTest,
+  submitTest,
+  getMyTestResults,
 } = require("../../Controllers/UserContollers/testController");
-
-const { protect } = require("../../middleware/authMiddleware");
 
 // --- ADMIN ROUTES ---
 router.post("/admin/update-test", updateTest);
-router.get("/admin/results", getStageResults);
-router.delete("/admin/delete-test", deleteTest); // Now this will work
+router.delete("/admin/delete-test", deleteTest);
+router.get("/admin/results", getResults);
 
 // --- USER ROUTES ---
 router.get("/user/get-test", getTest);
 router.post("/user/submit-test", submitTest);
+router.get("/user/my-results", getMyTestResults);
 
 module.exports = router;

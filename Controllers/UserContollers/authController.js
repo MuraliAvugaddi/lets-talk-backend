@@ -112,29 +112,38 @@ const loginUser = async (req, res) => {
 // @desc    Update User Access (Lock/Unlock Stages) & Emit Live Socket Event
 const updateUserAccess = async (req, res) => {
   try {
-    const { userId, englishAccess, hindiAccess } = req.body;
+    const { userId, englishAccess, hindiAccess, mode } = req.body;
+
+    let updateFields = {};
+    if (englishAccess) updateFields.englishAccess = englishAccess;
+    if (hindiAccess) updateFields.hindiAccess = hindiAccess;
+    if (mode) updateFields.mode = mode.toLowerCase();
 
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      { englishAccess, hindiAccess },
+      { $set: updateFields },
       { new: true }
     ).select("-password");
 
-    if (updatedUser) {
-      // ⚡ Broadcast permissions immediately to the student's open app
-      if (req.io) {
-        req.io.to(userId.toString()).emit("permissions_updated", {
-          englishAccess: updatedUser.englishAccess,
-          hindiAccess: updatedUser.hindiAccess,
-        });
-      }
-
-      res.json({ message: "Access Updated", user: updatedUser });
-    } else {
-      res.status(404).json({ message: "User not found" });
+    if (!updatedUser) {
+      return res.status(404).json({ message: "Student not found" });
     }
+
+    // ⚡ Emit real-time socket event directly to the student's device
+    if (req.io) {
+      req.io.to(userId.toString()).emit("permissions_updated", {
+        englishAccess: updatedUser.englishAccess,
+        hindiAccess: updatedUser.hindiAccess,
+        mode: updatedUser.mode,
+      });
+    }
+
+    res.status(200).json({
+      message: "Permissions and mode updated successfully!",
+      user: updatedUser,
+    });
   } catch (error) {
-    console.error("Error updating access:", error);
+    console.error("Update User Access Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
