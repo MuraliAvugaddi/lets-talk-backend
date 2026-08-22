@@ -24,7 +24,8 @@ const {
 const {
   markAttendance,
   joinOnlineClass,
-  onlineClassHeartbeat,
+  syncOnlineClass,
+  leaveOnlineClass,
   getAttendanceSheet,
   getAllStudentsFiltered,
   getMyAttendance,
@@ -52,18 +53,24 @@ router.get("/admin/users-by-stage", protect, getUsersByStage);
 router.get("/admin/all-students", getAllStudentsFiltered);
 
 // ==============================
-//      NOTIFICATION ROUTES
+//       NOTIFICATION ROUTES
 // ==============================
 router.post("/admin/notification", protect, setNotification);
 router.delete("/admin/notification", protect, deleteNotification);
 router.get("/user/notification", getNotification);
 
 // ==============================
-//       ATTENDANCE ROUTES
+//        ATTENDANCE ROUTES
 // ==============================
+// Offline Location Check-In
 router.post("/user/mark-attendance", markAttendance);
+
+// Online Live Session Tracking
 router.post("/user/join-online-class", joinOnlineClass);
-router.post("/user/online-heartbeat", onlineClassHeartbeat);
+router.post("/user/sync-online-class", syncOnlineClass);
+router.post("/user/leave-online-class", leaveOnlineClass);
+
+// User & Admin Attendance Logs
 router.get("/user/my-attendance", getMyAttendance);
 router.get("/admin/attendance", getAttendanceSheet);
 router.post("/admin/auto-absent", autoMarkAbsent);

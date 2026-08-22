@@ -1,11 +1,10 @@
 const Attendance = require("../../Models/attendance");
 const User = require("../../Models/users");
 
-// Helper date string formatter: D-M-YYYY
 const getFormattedDate = (d = new Date()) =>
   `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
 
-// --- 1. OFFLINE ATTENDANCE (Geofence + Late Check) ---
+// --- 1. OFFLINE ATTENDANCE (Geofence) ---
 const markAttendance = async (req, res) => {
   try {
     const { userId, stage, batchTime, lat, lng, language } = req.body;
@@ -92,11 +91,11 @@ const markAttendance = async (req, res) => {
 // --- 2. ONLINE LIVE CLASS: RECORD JOIN ---
 const joinOnlineClass = async (req, res) => {
   try {
-    const { userId, language, stage, batchTime } = req.body;
+    const { userId, language, stage, batchTime, joinTime } = req.body;
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const now = new Date();
+    const now = joinTime ? new Date(joinTime) : new Date();
     const dateStr = getFormattedDate(now);
 
     const record = await Attendance.findOneAndUpdate(
@@ -134,44 +133,97 @@ const joinOnlineClass = async (req, res) => {
   }
 };
 
-// --- 3. ONLINE LIVE CLASS: 60s HEARTBEAT ACCUMULATOR ---
-const onlineClassHeartbeat = async (req, res) => {
+// --- 3. ONLINE LIVE CLASS: ACCURATE SYNC ON RETURN ---
+const syncOnlineClass = async (req, res) => {
   try {
-    const { attendanceId } = req.body;
-    if (!attendanceId)
-      return res.status(400).json({ message: "Attendance ID required" });
+    const { attendanceId, returnTime } = req.body;
+    if (!attendanceId) {
+      return res.status(400).json({ message: "Attendance ID is required" });
+    }
 
     const record = await Attendance.findById(attendanceId);
-    if (!record) return res.status(404).json({ message: "Session not found" });
+    if (!record) {
+      return res.status(404).json({ message: "Session record not found" });
+    }
 
-    record.totalMinutesSpent += 1;
-    record.lastActiveTime = new Date();
+    const start = new Date(record.joinTime || record.createdAt);
+    const end = returnTime ? new Date(returnTime) : new Date();
+
+    const elapsedMinutes = Math.max(0, Math.round((end - start) / 60000));
+    const cappedMinutes = Math.min(elapsedMinutes, 90); // Cap at maximum batch duration (90 mins)
+
+    record.totalMinutesSpent = cappedMinutes;
+    record.lastActiveTime = end;
 
     if (record.totalMinutesSpent >= 45) {
       record.status = "Present";
     } else if (record.totalMinutesSpent >= 15) {
       record.status = "Partial";
+    } else {
+      record.status = "Absent";
     }
 
     await record.save();
+
     res.status(200).json({
       minutesSpent: record.totalMinutesSpent,
       status: record.status,
     });
   } catch (error) {
-    console.error("Heartbeat Error:", error);
+    console.error("Sync Online Class Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-// --- 4. ADMIN: MASTER ATTENDANCE SHEET ---
+// --- 4. ONLINE LIVE CLASS: EXPLICIT LEAVE SESSION ---
+const leaveOnlineClass = async (req, res) => {
+  try {
+    const { attendanceId, leaveTime } = req.body;
+    if (!attendanceId) {
+      return res.status(400).json({ message: "Attendance ID is required" });
+    }
+
+    const record = await Attendance.findById(attendanceId);
+    if (!record) {
+      return res.status(404).json({ message: "Session record not found" });
+    }
+
+    const start = new Date(record.joinTime || record.createdAt);
+    const end = leaveTime ? new Date(leaveTime) : new Date();
+
+    const elapsedMinutes = Math.max(0, Math.round((end - start) / 60000));
+    const finalMinutes = Math.min(elapsedMinutes, 90);
+
+    record.totalMinutesSpent = finalMinutes;
+    record.lastActiveTime = end;
+
+    if (record.totalMinutesSpent >= 45) {
+      record.status = "Present";
+    } else if (record.totalMinutesSpent >= 15) {
+      record.status = "Partial";
+    } else {
+      record.status = "Absent";
+    }
+
+    await record.save();
+
+    res.status(200).json({
+      message: "Session ended successfully",
+      minutesSpent: record.totalMinutesSpent,
+      status: record.status,
+    });
+  } catch (error) {
+    console.error("Leave Online Class Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// --- 5. ADMIN: MASTER ATTENDANCE SHEET ---
 const getAttendanceSheet = async (req, res) => {
   try {
     const { date, stage, batchTime, mode, language } = req.query;
-
     let attendanceQuery = {};
 
-    // 1. Safe Date Matching (handles 19-8-2026 & 19-08-2026)
     if (date) {
       const parts = date.split("-");
       if (parts.length === 3) {
@@ -186,35 +238,30 @@ const getAttendanceSheet = async (req, res) => {
       }
     }
 
-    // 2. Stage Filter
     if (stage && stage.toLowerCase() !== "all") {
       attendanceQuery.stage = {
         $regex: new RegExp(`^${stage.replace(/\s+/g, "\\s*")}$`, "i"),
       };
     }
 
-    // 3. Batch Filter
     if (batchTime && batchTime.toLowerCase() !== "all") {
       attendanceQuery.batchTime = {
         $regex: new RegExp(`^${batchTime.replace(/\s+/g, "\\s*")}$`, "i"),
       };
     }
 
-    // 4. Mode Filter (Online/Offline)
     if (mode && mode.toLowerCase() !== "all") {
       attendanceQuery.userMode = {
         $regex: new RegExp(`^${mode}$`, "i"),
       };
     }
 
-    // 5. Language Filter
     if (language && language.toLowerCase() !== "all") {
       attendanceQuery.language = {
         $regex: new RegExp(`^${language}$`, "i"),
       };
     }
 
-    // Query attendance records for the selected filters
     const attendances = await Attendance.find(attendanceQuery)
       .sort({ createdAt: -1 })
       .lean();
@@ -223,19 +270,29 @@ const getAttendanceSheet = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    const formattedList = attendances.map((rec) => ({
-      userId: rec.userId,
-      userName: rec.userName || "Unknown",
-      userPhone: rec.userPhone || "No Phone",
-      userMode: rec.userMode || "offline",
-      status: rec.status || "Absent",
-      markedAt: rec.markedAt || rec.joinTime || null,
-      totalMinutes: rec.totalMinutesSpent || 0,
-      batchTime: rec.batchTime || "N/A",
-      stage: rec.stage || "General",
-      language: rec.language || "English",
-      date: rec.date,
-    }));
+    const formattedList = attendances.map((rec) => {
+      let calcMinutes = rec.totalMinutesSpent || 0;
+      
+      // Auto-fallback calculation for ongoing online sessions
+      if (rec.userMode === "online" && rec.joinTime && (!rec.totalMinutesSpent || rec.totalMinutesSpent < 5)) {
+        const diff = Math.round((new Date() - new Date(rec.joinTime)) / 60000);
+        calcMinutes = Math.min(Math.max(diff, rec.totalMinutesSpent || 0), 90);
+      }
+
+      return {
+        userId: rec.userId,
+        userName: rec.userName || "Unknown",
+        userPhone: rec.userPhone || "No Phone",
+        userMode: rec.userMode || "offline",
+        status: calcMinutes >= 45 ? "Present" : (calcMinutes >= 15 ? "Partial" : (rec.status || "Absent")),
+        markedAt: rec.markedAt || rec.joinTime || null,
+        totalMinutes: calcMinutes,
+        batchTime: rec.batchTime || "N/A",
+        stage: rec.stage || "General",
+        language: rec.language || "English",
+        date: rec.date,
+      };
+    });
 
     res.status(200).json(formattedList);
   } catch (error) {
@@ -244,7 +301,7 @@ const getAttendanceSheet = async (req, res) => {
   }
 };
 
-// --- 5. ADMIN: GET ALL STUDENTS DIRECTORY ---
+// --- 6. ADMIN: GET ALL STUDENTS DIRECTORY ---
 const getAllStudentsFiltered = async (req, res) => {
   try {
     const { language, stage, mode } = req.query;
@@ -305,7 +362,7 @@ const getAllStudentsFiltered = async (req, res) => {
   }
 };
 
-// --- 6. USER: GET PERSONAL ATTENDANCE HISTORY ---
+// --- 7. USER: GET PERSONAL ATTENDANCE HISTORY ---
 const getMyAttendance = async (req, res) => {
   try {
     const { userId, language } = req.query;
@@ -314,7 +371,6 @@ const getMyAttendance = async (req, res) => {
     }
 
     let query = { userId };
-
     if (language && language.toLowerCase() !== "all") {
       query.language = language;
     }
@@ -331,7 +387,7 @@ const getMyAttendance = async (req, res) => {
   }
 };
 
-// --- 7. SYSTEM: AUTO-MARK ABSENT ---
+// --- 8. SYSTEM: AUTO-MARK ABSENT ---
 const autoMarkAbsent = async (req, res) => {
   try {
     const now = new Date();
@@ -377,7 +433,8 @@ const autoMarkAbsent = async (req, res) => {
 module.exports = {
   markAttendance,
   joinOnlineClass,
-  onlineClassHeartbeat,
+  syncOnlineClass,
+  leaveOnlineClass,
   getAttendanceSheet,
   getAllStudentsFiltered,
   getMyAttendance,
