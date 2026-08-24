@@ -32,7 +32,14 @@ const {
   autoMarkAbsent,
 } = require("../../Controllers/UserContollers/attendanceController");
 
-// --- 4. MIDDLEWARE ---
+// --- 4. FEEDBACK CONTROLLERS ---
+const {
+  submitFeedback,
+  getAllFeedbacks,
+  deleteFeedback,
+} = require("../../Controllers/UserContollers/feedbackController");
+
+// --- 5. MIDDLEWARE ---
 const { protect } = require("../../middleware/authMiddleware");
 
 // ==============================
@@ -74,5 +81,15 @@ router.post("/user/leave-online-class", leaveOnlineClass);
 router.get("/user/my-attendance", getMyAttendance);
 router.get("/admin/attendance", getAttendanceSheet);
 router.post("/admin/auto-absent", autoMarkAbsent);
+
+// ==============================
+//         FEEDBACK ROUTES
+// ==============================
+// User Route: Submit student feedback
+router.post("/user/feedback", submitFeedback);
+
+// Admin Routes: View all & delete feedbacks
+router.get("/admin/feedbacks", protect, getAllFeedbacks);
+router.delete("/admin/feedbacks/:id", protect, deleteFeedback);
 
 module.exports = router;
