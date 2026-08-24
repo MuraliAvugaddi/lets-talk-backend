@@ -1,4 +1,3 @@
-//const Feedback = require("../Models/feedback");
 const Feedback = require("../../Models/feedback");
 
 // @desc    Submit student feedback (User side)
@@ -24,13 +23,34 @@ const submitFeedback = async (req, res) => {
   }
 };
 
-// @desc    Get all student feedback (Admin side)
+// @desc    Get all student feedback with Date & Mode Filters (Admin side)
 // @route   GET /api/admin/feedbacks
 const getAllFeedbacks = async (req, res) => {
   try {
-    const feedbacks = await Feedback.find({})
+    const { date, mode } = req.query;
+    let query = {};
+
+    // Mode Filter
+    if (mode && mode.toLowerCase() !== "all") {
+      query.mode = mode.toLowerCase();
+    }
+
+    // Date Filter (Specific Day Query: Start of day to End of day)
+    if (date && date.toLowerCase() !== "all") {
+      const selected = new Date(date);
+      const startOfDay = new Date(selected.setUTCHours(0, 0, 0, 0));
+      const endOfDay = new Date(selected.setUTCHours(23, 59, 59, 999));
+
+      query.createdAt = {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      };
+    }
+
+    const feedbacks = await Feedback.find(query)
       .sort({ createdAt: -1 })
       .populate("userId", "name phone mode");
+
     res.status(200).json({ feedbacks });
   } catch (error) {
     console.error("Get Feedbacks Error:", error);

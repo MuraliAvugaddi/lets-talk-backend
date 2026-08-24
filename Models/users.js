@@ -6,6 +6,10 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true },
     mode: { type: String, enum: ["online", "offline"], required: true },
+    onlineSection: { type: String, enum: ["A", "B", "C", "D", "E", "None"], default: "None" },
+
+    feeStatus: { type: String, enum: ["paid", "unpaid"], default: "unpaid" },
+    lastFeePaymentDate: { type: Date, default: null },
 
     sessionToken: { type: String, default: "" },
 
@@ -30,7 +34,10 @@ const userSchema = new mongoose.Schema(
       stage6: { type: Boolean, default: false },
       stage7: { type: Boolean, default: false },
     },
-    role: { type: String, enum: ["student", "admin"], default: "student" },
+    role: { type: String, enum: ["student", "teacher", "admin"], default: "student" },
+    teacherStage: { type: String, default: "" }, // e.g. "stage1"
+    teacherSection: { type: String, default: "" }, // e.g. "A"
+    teacherMode: { type: String, default: "offline" }, // "offline" or "online"
   },
   { timestamps: true }
 );

@@ -11,6 +11,7 @@ const {
   updateUserAccess,
   deleteUser,
   getUsersByStage,
+  updateStudentStatus,
 } = require("../../Controllers/UserContollers/authController");
 
 // --- 2. NOTIFICATION CONTROLLERS ---
@@ -55,6 +56,7 @@ router.get("/profile", protect, getUserProfile);
 // ==============================
 router.get("/users", protect, getAllUsers);
 router.put("/update-access", protect, updateUserAccess);
+router.put("/admin/update-student-status", protect, updateStudentStatus);
 router.delete("/users/:id", protect, deleteUser);
 router.get("/admin/users-by-stage", protect, getUsersByStage);
 router.get("/admin/all-students", getAllStudentsFiltered);

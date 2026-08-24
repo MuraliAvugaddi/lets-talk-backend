@@ -148,6 +148,56 @@ const updateUserAccess = async (req, res) => {
   }
 };
 
+// @desc    Admin: Update Student Fee Status & Section Assignment
+const updateStudentStatus = async (req, res) => {
+  try {
+    const { userId, feeStatus, onlineSection, mode } = req.body;
+    let updateFields = {};
+
+    if (feeStatus) {
+      updateFields.feeStatus = feeStatus.toLowerCase();
+      if (feeStatus.toLowerCase() === "paid") {
+        updateFields.lastFeePaymentDate = new Date();
+      }
+    }
+
+    if (onlineSection) {
+      updateFields.onlineSection = onlineSection.toUpperCase();
+    }
+
+    if (mode) {
+      updateFields.mode = mode.toLowerCase();
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: updateFields },
+      { new: true }
+    ).select("-password");
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    // ⚡ Emit live update via socket to student & teacher rooms
+    if (req.io) {
+      req.io.to(userId.toString()).emit("permissions_updated", {
+        feeStatus: updatedUser.feeStatus,
+        onlineSection: updatedUser.onlineSection,
+        mode: updatedUser.mode,
+      });
+    }
+
+    res.status(200).json({
+      message: "Student fee status & section updated successfully",
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Update Student Status Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 // @desc    Reset Password
 const resetPassword = async (req, res) => {
   try {
@@ -178,6 +228,8 @@ const getUserProfile = async (req, res) => {
         name: freshUser.name,
         phone: freshUser.phone,
         mode: freshUser.mode,
+        onlineSection: freshUser.onlineSection,
+        feeStatus: freshUser.feeStatus,
         role: freshUser.role,
         englishAccess: freshUser.englishAccess,
         hindiAccess: freshUser.hindiAccess,
@@ -233,7 +285,7 @@ const deleteUser = async (req, res) => {
 // @desc    Get Users By Stage (Offline)
 const getUsersByStage = async (req, res) => {
   try {
-    const allUsers = await User.find({}).select("name phone mode englishAccess");
+    const allUsers = await User.find({}).select("name phone mode feeStatus onlineSection englishAccess");
     const offlineUsers = allUsers.filter(
       (u) => u.mode && u.mode.toString().trim().toLowerCase() === "offline"
     );
@@ -250,6 +302,7 @@ module.exports = {
   getUserProfile,
   getAllUsers,
   updateUserAccess,
+  updateStudentStatus,
   deleteUser,
   getUsersByStage,
 };
