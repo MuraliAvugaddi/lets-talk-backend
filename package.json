@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@stream-io/node-sdk": "^0.8.3",
     "bcrypt": "^6.0.0",
     "cores": "^0.8.5",
     "cors": "^2.8.6",

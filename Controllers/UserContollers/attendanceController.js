@@ -15,7 +15,7 @@ const markAttendance = async (req, res) => {
     if (!user.mode || user.mode.toLowerCase() !== "offline") {
       return res
         .status(403)
-        .json({ message: "Only Offline students can use location check-in." });
+        .json({ message: "Only Offline users can use location check-in." });
     }
 
     const now = new Date();
@@ -68,7 +68,7 @@ const markAttendance = async (req, res) => {
         userName: user.name,
         userPhone: user.phone,
         userMode: "offline",
-        language: language || "English",
+        language: language || user.language || "English",
         status,
         markedAt: now,
         location: { lat, lng },
@@ -88,7 +88,7 @@ const markAttendance = async (req, res) => {
   }
 };
 
-// --- 2. ONLINE LIVE CLASS: RECORD JOIN ---
+// --- 2. ONLINE LIVE CLASS: RECORD JOIN OR RE-JOIN ---
 const joinOnlineClass = async (req, res) => {
   try {
     const { userId, language, stage, batchTime, joinTime } = req.body;
@@ -98,32 +98,37 @@ const joinOnlineClass = async (req, res) => {
     const now = joinTime ? new Date(joinTime) : new Date();
     const dateStr = getFormattedDate(now);
 
-    const record = await Attendance.findOneAndUpdate(
-      {
+    let record = await Attendance.findOne({
+      userId,
+      stage: stage || "General",
+      batchTime: batchTime || "N/A",
+      date: dateStr,
+    });
+
+    if (record) {
+      record.joinTime = now;
+      record.lastActiveTime = now;
+      if (record.status === "Absent") record.status = "Partial";
+      await record.save();
+    } else {
+      record = await Attendance.create({
         userId,
+        userName: user.name,
+        userPhone: user.phone,
+        userMode: "online",
+        language: language || user.language || "English",
         stage: stage || "General",
         batchTime: batchTime || "N/A",
         date: dateStr,
-      },
-      {
-        $setOnInsert: {
-          userName: user.name,
-          userPhone: user.phone,
-          userMode: "online",
-          language: language || "English",
-          joinTime: now,
-          totalMinutesSpent: 0,
-          status: "Partial",
-        },
-        $set: {
-          lastActiveTime: now,
-        },
-      },
-      { upsert: true, new: true }
-    );
+        joinTime: now,
+        lastActiveTime: now,
+        totalMinutesSpent: 0,
+        status: "Partial",
+      });
+    }
 
     res.status(200).json({
-      message: "Join time recorded",
+      message: "Join time recorded/updated",
       attendanceId: record._id,
       totalMinutes: record.totalMinutesSpent,
     });
@@ -150,9 +155,9 @@ const syncOnlineClass = async (req, res) => {
     const end = returnTime ? new Date(returnTime) : new Date();
 
     const elapsedMinutes = Math.max(0, Math.round((end - start) / 60000));
-    const cappedMinutes = Math.min(elapsedMinutes, 90); // Cap at maximum batch duration (90 mins)
+    const accumulatedMinutes = Math.min((record.totalMinutesSpent || 0) + elapsedMinutes, 90);
 
-    record.totalMinutesSpent = cappedMinutes;
+    record.totalMinutesSpent = accumulatedMinutes;
     record.lastActiveTime = end;
 
     if (record.totalMinutesSpent >= 45) {
@@ -188,14 +193,17 @@ const leaveOnlineClass = async (req, res) => {
       return res.status(404).json({ message: "Session record not found" });
     }
 
-    const start = new Date(record.joinTime || record.createdAt);
-    const end = leaveTime ? new Date(leaveTime) : new Date();
+    if (record.joinTime) {
+      const start = new Date(record.joinTime);
+      const end = leaveTime ? new Date(leaveTime) : new Date();
 
-    const elapsedMinutes = Math.max(0, Math.round((end - start) / 60000));
-    const finalMinutes = Math.min(elapsedMinutes, 90);
+      const sessionMinutes = Math.max(0, Math.round((end - start) / 60000));
+      const accumulatedMinutes = Math.min((record.totalMinutesSpent || 0) + sessionMinutes, 90);
 
-    record.totalMinutesSpent = finalMinutes;
-    record.lastActiveTime = end;
+      record.totalMinutesSpent = accumulatedMinutes;
+      record.lastActiveTime = end;
+      record.joinTime = null; 
+    }
 
     if (record.totalMinutesSpent >= 45) {
       record.status = "Present";
@@ -208,7 +216,7 @@ const leaveOnlineClass = async (req, res) => {
     await record.save();
 
     res.status(200).json({
-      message: "Session ended successfully",
+      message: "Session ended and minutes accumulated",
       minutesSpent: record.totalMinutesSpent,
       status: record.status,
     });
@@ -273,10 +281,9 @@ const getAttendanceSheet = async (req, res) => {
     const formattedList = attendances.map((rec) => {
       let calcMinutes = rec.totalMinutesSpent || 0;
       
-      // Auto-fallback calculation for ongoing online sessions
-      if (rec.userMode === "online" && rec.joinTime && (!rec.totalMinutesSpent || rec.totalMinutesSpent < 5)) {
+      if (rec.userMode === "online" && rec.joinTime) {
         const diff = Math.round((new Date() - new Date(rec.joinTime)) / 60000);
-        calcMinutes = Math.min(Math.max(diff, rec.totalMinutesSpent || 0), 90);
+        calcMinutes = Math.min((rec.totalMinutesSpent || 0) + Math.max(0, diff), 90);
       }
 
       return {
@@ -301,7 +308,7 @@ const getAttendanceSheet = async (req, res) => {
   }
 };
 
-// --- 6. ADMIN: GET ALL STUDENTS DIRECTORY ---
+// --- 6. ADMIN: GET ALL STUDENTS/STAFF DIRECTORY ---
 const getAllStudentsFiltered = async (req, res) => {
   try {
     const { language, stage, mode } = req.query;
@@ -340,10 +347,18 @@ const getAllStudentsFiltered = async (req, res) => {
           date: dateStr,
         }).sort({ updatedAt: -1 });
 
+        let currentMins = attendance ? attendance.totalMinutesSpent : 0;
+        if (attendance && attendance.userMode === "online" && attendance.joinTime) {
+          const diff = Math.round((new Date() - new Date(attendance.joinTime)) / 60000);
+          currentMins = Math.min((attendance.totalMinutesSpent || 0) + Math.max(0, diff), 90);
+        }
+
+        const evaluatedStatus = currentMins >= 45 ? "Present" : (currentMins >= 15 ? "Partial" : (attendance ? attendance.status : "Absent"));
+
         return {
           ...student,
-          attendanceStatus: attendance ? attendance.status : "Absent",
-          totalMinutesSpent: attendance ? attendance.totalMinutesSpent : 0,
+          attendanceStatus: attendance ? evaluatedStatus : "Absent",
+          totalMinutesSpent: currentMins,
           batchTime: attendance ? attendance.batchTime : "Not Joined",
           markedAt: attendance
             ? attendance.markedAt || attendance.joinTime
@@ -393,10 +408,10 @@ const autoMarkAbsent = async (req, res) => {
     const now = new Date();
     const dateStr = getFormattedDate(now);
 
-    const offlineUsers = await User.find({ mode: { $regex: /^offline$/i } });
+    const allUsers = await User.find({});
     let count = 0;
 
-    for (const user of offlineUsers) {
+    for (const user of allUsers) {
       const record = await Attendance.findOne({
         userId: user._id,
         date: dateStr,
@@ -407,12 +422,13 @@ const autoMarkAbsent = async (req, res) => {
             userId: user._id,
             userName: user.name,
             userPhone: user.phone,
-            userMode: "offline",
+            userMode: user.mode || "offline",
+            language: user.language || "English",
             date: dateStr,
-            stage: "General",
+            stage: user.teacherStage || "Stage 1",
             batchTime: "N/A",
             status: "Absent",
-            markedAt: now,
+            totalMinutesSpent: 0,
           });
           count++;
         } catch (innerError) {
@@ -422,7 +438,7 @@ const autoMarkAbsent = async (req, res) => {
     }
 
     res.status(200).json({
-      message: `Auto-Absent complete. Marked ${count} students absent.`,
+      message: `Auto-Absent complete. Marked ${count} users absent.`,
     });
   } catch (error) {
     console.error("Auto Absent Error:", error);

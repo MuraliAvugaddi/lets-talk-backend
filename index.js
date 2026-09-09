@@ -8,6 +8,8 @@ const cors = require("cors");
 const userRoutes = require("./Routes/UserRoutes/authRoute");
 const testRoutes = require("./Routes/UserRoutes/testRoute");
 const liveRoutes = require("./Routes/UserRoutes/liveRoute");
+// 1. Import your new stream auth route file (adjust filename/path if named differently)
+const streamRoute = require("./Routes/UserRoutes/streamRoute");
 
 // Import models to clean up indexes
 const User = require("./Models/users");
@@ -39,6 +41,8 @@ app.use(express.json());
 app.use("/api", userRoutes);
 app.use("/api/test", testRoutes);
 app.use("/api/live", liveRoutes);
+// 2. Mount the stream token route under /api so it becomes /api/get-stream-token
+app.use("/api/stream", streamRoute);
 
 // Socket Connection Handler
 io.on("connection", (socket) => {

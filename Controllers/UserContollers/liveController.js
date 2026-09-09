@@ -6,11 +6,11 @@ const updateLink = async (req, res) => {
     const { language, stage, type, link } = req.body;
 
     // Upsert: Update if exists, Create if new
-    const liveSession = await LiveLink.findOneAndUpdate(
-      { language, stage, type },
-      { link, isActive: true },
-      { new: true, upsert: true }
-    );
+ const liveSession = await LiveLink.findOneAndUpdate(
+  { language, stage, type },
+  { link, isActive: true },
+  { returnDocument: 'after', upsert: true } // ✅ Modern syntax
+);
 
     res.json({ message: "Link updated successfully", data: liveSession });
   } catch (error) {

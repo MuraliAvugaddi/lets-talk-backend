@@ -2,10 +2,10 @@ const User = require("../../Models/users");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 
-// @desc    Register a new user
+// @desc    Register a new user (Student, Teacher, or Manager)
 const registerUser = async (req, res) => {
   try {
-    const { name, phone, password, mode, role } = req.body;
+    const { name, phone, password, mode, role, language, teacherStage, teacherSection } = req.body;
 
     if (!name || !phone || !password || !mode) {
       return res.status(400).json({ message: "Please provide all required fields." });
@@ -26,6 +26,9 @@ const registerUser = async (req, res) => {
       password: hashedPassword,
       mode,
       role: role || "student",
+      language: language || "English",
+      teacherStage: teacherStage || "stage1",
+      teacherSection: teacherSection || "None",
       sessionToken,
     });
 
@@ -47,6 +50,9 @@ const registerUser = async (req, res) => {
         phone: newUser.phone,
         mode: newUser.mode,
         role: newUser.role,
+        language: newUser.language,
+        stage: newUser.teacherStage,
+        section: newUser.teacherSection,
         englishAccess: newUser.englishAccess,
         hindiAccess: newUser.hindiAccess,
       },
@@ -96,6 +102,9 @@ const loginUser = async (req, res) => {
           phone: user.phone,
           mode: user.mode,
           role: user.role,
+          language: user.language || "English",
+          stage: user.teacherStage || "stage1",
+          section: user.teacherSection || "None",
           englishAccess: user.englishAccess,
           hindiAccess: user.hindiAccess,
         },
@@ -228,9 +237,12 @@ const getUserProfile = async (req, res) => {
         name: freshUser.name,
         phone: freshUser.phone,
         mode: freshUser.mode,
+        language: freshUser.language || "English",
         onlineSection: freshUser.onlineSection,
         feeStatus: freshUser.feeStatus,
         role: freshUser.role,
+        stage: freshUser.teacherStage || "stage1",
+        section: freshUser.teacherSection || "None",
         englishAccess: freshUser.englishAccess,
         hindiAccess: freshUser.hindiAccess,
       });
@@ -285,7 +297,7 @@ const deleteUser = async (req, res) => {
 // @desc    Get Users By Stage (Offline)
 const getUsersByStage = async (req, res) => {
   try {
-    const allUsers = await User.find({}).select("name phone mode feeStatus onlineSection englishAccess");
+    const allUsers = await User.find({}).select("name phone mode feeStatus onlineSection englishAccess role");
     const offlineUsers = allUsers.filter(
       (u) => u.mode && u.mode.toString().trim().toLowerCase() === "offline"
     );
@@ -298,11 +310,11 @@ const getUsersByStage = async (req, res) => {
 module.exports = {
   registerUser,
   loginUser,
+  updateUserAccess,
+  updateStudentStatus,
   resetPassword,
   getUserProfile,
   getAllUsers,
-  updateUserAccess,
-  updateStudentStatus,
   deleteUser,
   getUsersByStage,
 };

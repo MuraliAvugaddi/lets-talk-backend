@@ -7,13 +7,13 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true },
     mode: { type: String, enum: ["online", "offline"], required: true },
     onlineSection: { type: String, enum: ["A", "B", "C", "D", "E", "None"], default: "None" },
+    language: { type: String, enum: ["English", "Hindi"], default: "English" },
 
     feeStatus: { type: String, enum: ["paid", "unpaid"], default: "unpaid" },
     lastFeePaymentDate: { type: Date, default: null },
 
     sessionToken: { type: String, default: "" },
 
-    // ⬇️ 7 Stages for English
     englishAccess: {
       stage1: { type: Boolean, default: false },
       stage2: { type: Boolean, default: false },
@@ -24,7 +24,6 @@ const userSchema = new mongoose.Schema(
       stage7: { type: Boolean, default: false },
     },
 
-    // ⬇️ 7 Stages for Hindi
     hindiAccess: {
       stage1: { type: Boolean, default: false },
       stage2: { type: Boolean, default: false },
@@ -34,10 +33,10 @@ const userSchema = new mongoose.Schema(
       stage6: { type: Boolean, default: false },
       stage7: { type: Boolean, default: false },
     },
-    role: { type: String, enum: ["student", "teacher", "admin"], default: "student" },
-    teacherStage: { type: String, default: "" }, // e.g. "stage1"
-    teacherSection: { type: String, default: "" }, // e.g. "A"
-    teacherMode: { type: String, default: "offline" }, // "offline" or "online"
+    
+    role: { type: String, enum: ["student", "teacher", "manager", "admin"], default: "student" },
+    teacherStage: { type: String, default: "stage1" }, 
+    teacherSection: { type: String, default: "None" }, 
   },
   { timestamps: true }
 );
