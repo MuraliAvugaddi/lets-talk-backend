@@ -6,7 +6,10 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true },
     mode: { type: String, enum: ["online", "offline"], required: true },
-    onlineSection: { type: String, enum: ["A", "B", "C", "D", "E", "None"], default: "None" },
+    
+    // 🚀 Changed from strict enum to a flexible String to prevent validation crashes
+    onlineSection: { type: String, default: "None", trim: true },
+    
     language: { type: String, enum: ["English", "Hindi"], default: "English" },
 
     feeStatus: { type: String, enum: ["paid", "unpaid"], default: "unpaid" },

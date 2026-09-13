@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const cors = require("cors");
+const cron = require("node-cron");
 
 const userRoutes = require("./Routes/UserRoutes/authRoute");
 const testRoutes = require("./Routes/UserRoutes/testRoute");
@@ -11,7 +12,8 @@ const liveRoutes = require("./Routes/UserRoutes/liveRoute");
 // 1. Import your new stream auth route file (adjust filename/path if named differently)
 const streamRoute = require("./Routes/UserRoutes/streamRoute");
 
-// Import models to clean up indexes
+// Import controllers and models
+const { autoMarkAbsent } = require("./Controllers/UserContollers/attendanceController");
 const User = require("./Models/users");
 const Attendance = require("./Models/attendance");
 
@@ -74,6 +76,17 @@ mongoose
     }
   })
   .catch((error) => console.log(error));
+
+// 🕒 Scheduled Cron Job: Runs every day at 6:40 PM (18:40) to auto-mark absentees who missed all batches
+cron.schedule('40 18 * * *', async () => {
+  console.log('Running 6:40 PM daily auto-absent cutoff job...');
+  try {
+    await autoMarkAbsent();
+    console.log('Auto-absent successfully locked for unrecorded users.');
+  } catch (err) {
+    console.error('Error running 6:40 PM auto-absent cron:', err);
+  }
+});
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server is connected Port at ${PORT}`);
