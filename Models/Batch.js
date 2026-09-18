@@ -7,4 +7,4 @@ const BatchSchema = new mongoose.Schema({
   currentMeetLink: { type: String, default: null }
 });
 
-module.exports = mongoose.model('Batch', BatchSchema);
+module.exports = mongoose.model('Batch', BatchSchema);a

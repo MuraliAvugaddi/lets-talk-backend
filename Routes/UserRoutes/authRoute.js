@@ -12,6 +12,7 @@ const {
   deleteUser,
   getUsersByStage,
   updateStudentStatus,
+  getAllTeachersFiltered,
 } = require("../../Controllers/UserContollers/authController");
 
 // --- 2. NOTIFICATION CONTROLLERS ---
@@ -29,8 +30,7 @@ const {
   leaveOnlineClass,
   getAttendanceSheet,
   getAllStudentsFiltered,
-  getAllTeachersFiltered,
-  getTrainerClassroomRoster, // 🚀 Added missing import
+  getTrainerClassroomRoster,
   getMyAttendance,
   autoMarkAbsent,
 } = require("../../Controllers/UserContollers/attendanceController");
@@ -46,7 +46,7 @@ const {
 const { protect } = require("../../middleware/authMiddleware");
 
 // ==============================
-//          AUTH ROUTES
+//        AUTH ROUTES
 // ==============================
 router.post("/register", registerUser);
 router.post("/login", loginUser);
@@ -54,7 +54,7 @@ router.post("/reset-password", resetPassword);
 router.get("/profile", protect, getUserProfile);
 
 // ==============================
-//        ADMIN USER ROUTES
+//       ADMIN USER ROUTES
 // ==============================
 router.get("/users", protect, getAllUsers);
 router.get("/admin/all-students", getAllUsers);
@@ -65,32 +65,31 @@ router.get("/admin/users-by-stage", protect, getUsersByStage);
 router.get("/admin/teachers", getAllTeachersFiltered);
 
 // ==============================
-//        NOTIFICATION ROUTES
+//       NOTIFICATION ROUTES
 // ==============================
 router.post("/admin/notification", protect, setNotification);
 router.delete("/admin/notification", protect, deleteNotification);
 router.get("/user/notification", getNotification);
 
 // ==============================
-//        ATTENDANCE ROUTES
+//       ATTENDANCE ROUTES
 // ==============================
 router.post("/user/mark-attendance", markAttendance);
 router.post("/user/join-online-class", joinOnlineClass);
 router.post("/user/sync-online-class", syncOnlineClass);
 router.post("/user/leave-online-class", leaveOnlineClass);
 
-// 🚀 Dedicated trainer classroom desk roster route
 router.get("/admin/trainer-roster", getTrainerClassroomRoster);
-
 router.get("/user/my-attendance", getMyAttendance);
 router.get("/admin/attendance", getAttendanceSheet);
 router.post("/admin/auto-absent", autoMarkAbsent);
 
 // ==============================
-//         FEEDBACK ROUTES
+//        FEEDBACK ROUTES
 // ==============================
 router.post("/user/feedback", submitFeedback);
 router.get("/admin/feedbacks", protect, getAllFeedbacks);
 router.delete("/admin/feedbacks/:id", protect, deleteFeedback);
 
+// 🛑 CRITICAL: Must export the router, NOT an object of functions!
 module.exports = router;

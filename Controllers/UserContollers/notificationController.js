@@ -10,6 +10,16 @@ const setNotification = async (req, res) => {
       message, 
       targetMode: targetMode || "all" 
     });
+
+    // ⚡ Broadcast live notification update to all connected student clients
+    if (req.io) {
+      req.io.emit('new_notification', {
+        hasNotification: true,
+        message: newNotif.message,
+        targetMode: newNotif.targetMode,
+      });
+    }
+
     res.status(200).json({ message: "Notification Posted", data: newNotif });
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
@@ -25,6 +35,14 @@ const deleteNotification = async (req, res) => {
     } else {
       await Notification.deleteMany({});
     }
+
+    // ⚡ Broadcast removal notice to all clients
+    if (req.io) {
+      req.io.emit('new_notification', {
+        hasNotification: false,
+      });
+    }
+
     res.status(200).json({ message: "Notification Removed" });
   } catch (error) {
     res.status(500).json({ message: "Server Error" });

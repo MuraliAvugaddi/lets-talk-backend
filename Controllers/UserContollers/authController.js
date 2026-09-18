@@ -3,14 +3,12 @@ const Attendance = require("../../Models/attendance");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// Generate JWT Token helper
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET || "fallback_secret", {
-    expiresIn: "30d",
+    expiresIn: "365d", // 🚀 Extended to 365 days (1 year)
   });
 };
 
-// Helper to safely format online section to match allowed schema values
 const sanitizeSection = (sec) => {
   if (!sec) return "None";
   const trimmed = sec.trim();
@@ -19,7 +17,20 @@ const sanitizeSection = (sec) => {
   return matched || "None";
 };
 
-// --- 1. REGISTER USER ---
+// --- 🔄 AUTOMATIC MONTHLY FEE RESET FOR NEW MONTH ---
+const resetMonthlyFeesForNewMonth = async () => {
+  try {
+    const result = await User.updateMany(
+      { role: "student" },
+      { $set: { feeStatus: "unpaid" } }
+    );
+    console.log(`✅ Monthly Fee Reset Completed: ${result.modifiedCount} students marked as unpaid for the new month.`);
+  } catch (err) {
+    console.error("❌ Error running monthly fee reset cron:", err);
+  }
+};
+
+// --- 1. REGISTER USER (CLEAN DEFAULT ACCESS) ---
 const registerUser = async (req, res) => {
   try {
     const { name, phone, password, mode, onlineSection, language, role, teacherStage, teacherSection } = req.body;
@@ -46,8 +57,10 @@ const registerUser = async (req, res) => {
       role: role || "student",
       teacherStage: teacherStage || "stage1",
       teacherSection: teacherSection || "None",
-      englishAccess: { stage1: true, stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, stage7: false },
+      // 🚀 Ensure ALL stages default to false so new/re-registered users start locked
+      englishAccess: { stage1: false, stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, stage7: false },
       hindiAccess: { stage1: false, stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, stage7: false },
+      feeStatus: "unpaid",
     });
 
     if (user) {
@@ -66,6 +79,9 @@ const registerUser = async (req, res) => {
           stage: user.teacherStage,
           section: user.teacherSection,
           onlineSection: user.onlineSection,
+          englishAccess: user.englishAccess,
+          hindiAccess: user.hindiAccess,
+          feeStatus: user.feeStatus,
         },
       });
     } else {
@@ -77,7 +93,6 @@ const registerUser = async (req, res) => {
   }
 };
 
-// --- 2. LOGIN USER ---
 const loginUser = async (req, res) => {
   try {
     const { phone, password } = req.body;
@@ -119,7 +134,6 @@ const loginUser = async (req, res) => {
   }
 };
 
-// --- 3. RESET PASSWORD ---
 const resetPassword = async (req, res) => {
   try {
     const { phone, newPassword } = req.body;
@@ -143,7 +157,6 @@ const resetPassword = async (req, res) => {
   }
 };
 
-// --- 4. GET USER PROFILE ---
 const getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select("-password");
@@ -157,11 +170,11 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-// --- 5. GET ALL USERS / STUDENTS ---
 const getAllUsers = async (req, res) => {
   try {
     const { mode } = req.query;
-    let query = {}; 
+    // 🚀 Explicitly restrict to student roles only
+    let query = { role: "student" }; 
 
     if (mode && mode.toLowerCase() !== "all") {
       query.mode = { $regex: new RegExp(`^${mode}$`, "i") };
@@ -180,11 +193,10 @@ const getAllUsers = async (req, res) => {
   }
 };
 
-// --- 6. GET USERS BY STAGE ---
 const getUsersByStage = async (req, res) => {
   try {
     const { stage } = req.query;
-    let query = {};
+    let query = { role: "student" };
     if (stage && stage.toLowerCase() !== "all") {
       const cleanStage = stage.replace(/\s+/g, "");
       query.teacherStage = { 
@@ -200,7 +212,41 @@ const getUsersByStage = async (req, res) => {
   }
 };
 
-// --- 7. UPDATE USER ACCESS ---
+const getAllTeachersFiltered = async (req, res) => {
+  try {
+    const { mode, language, stage } = req.query;
+    let query = { role: { $in: ["teacher", "manager", "admin"] } };
+
+    if (mode && mode.toLowerCase() !== "all") {
+      query.mode = { $regex: new RegExp(`^${mode.trim()}$`, "i") };
+    }
+
+    if (language && language.toLowerCase() !== "all") {
+      query.language = { $regex: new RegExp(`^${language.trim()}$`, "i") };
+    }
+
+    if (stage && stage.toLowerCase() !== "all") {
+      const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
+      const spacedStage = stage.toLowerCase();
+      query.$or = [
+        { teacherStage: { $regex: new RegExp(`^${spacedStage}$`, "i") } },
+        { teacherStage: { $regex: new RegExp(`^${cleanStage}$`, "i") } }
+      ];
+    }
+
+    const teachers = await User.find(query).select("-password").lean();
+    res.status(200).json({
+      success: true,
+      total: teachers.length,
+      teachers: teachers,
+    });
+  } catch (error) {
+    console.error("Get Teachers Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+
 const updateUserAccess = async (req, res) => {
   try {
     const { userId, englishAccess, hindiAccess, mode, onlineSection } = req.body;
@@ -214,6 +260,15 @@ const updateUserAccess = async (req, res) => {
 
     await user.save();
 
+    if (req.io) {
+      req.io.to(userId.toString()).emit('permissions_updated', {
+        englishAccess: user.englishAccess,
+        hindiAccess: user.hindiAccess,
+        mode: user.mode,
+        onlineSection: user.onlineSection,
+      });
+    }
+
     res.status(200).json({ message: "User access updated successfully", user });
   } catch (error) {
     console.error("Update User Access Error:", error);
@@ -221,7 +276,6 @@ const updateUserAccess = async (req, res) => {
   }
 };
 
-// --- 8. UPDATE STUDENT STATUS ---
 const updateStudentStatus = async (req, res) => {
   try {
     const { userId, feeStatus, onlineSection, mode } = req.body;
@@ -234,6 +288,14 @@ const updateStudentStatus = async (req, res) => {
 
     await user.save();
 
+    if (req.io) {
+      req.io.to(userId.toString()).emit('permissions_updated', {
+        feeStatus: user.feeStatus,
+        onlineSection: user.onlineSection,
+        mode: user.mode,
+      });
+    }
+
     res.status(200).json({ message: "Student status updated", user });
   } catch (error) {
     console.error("Update Student Status Error:", error);
@@ -241,7 +303,6 @@ const updateStudentStatus = async (req, res) => {
   }
 };
 
-// --- 9. DELETE USER ---
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -262,7 +323,9 @@ module.exports = {
   getUserProfile,
   getAllUsers,
   getUsersByStage,
+  getAllTeachersFiltered,
   updateUserAccess,
   updateStudentStatus,
   deleteUser,
+  resetMonthlyFeesForNewMonth,
 };

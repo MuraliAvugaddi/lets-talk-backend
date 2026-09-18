@@ -1,23 +1,114 @@
 const Attendance = require("../../Models/attendance");
 const User = require("../../Models/users");
 
-const getFormattedDate = (d = new Date()) =>
-  `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
+// 🚀 FIXED: Robust date formatter that falls back to today's local date if format is invalid
+const getFormattedDate = (d = new Date()) => {
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}-${month}-${year}`;
+};
 
-const evaluateAttendanceStatus = (joinDate, batchStartTimeStr = "05:30") => {
+const parseTimeToMinutes = (timeStr) => {
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const evaluateTeacherStatus = (joinDate) => {
+  if (!joinDate) return "Absent";
+  const d = new Date(joinDate);
+  const currentMins = d.getHours() * 60 + d.getMinutes();
+
+  const morningStart = parseTimeToMinutes("05:25");
+  const morningEnd = parseTimeToMinutes("05:35");
+  const eveningStart = parseTimeToMinutes("15:25"); 
+  const eveningEnd = parseTimeToMinutes("15:35");   
+
+  if ((currentMins >= morningStart && currentMins <= morningEnd) ||
+      (currentMins >= eveningStart && currentMins <= eveningEnd)) {
+    return "Present";
+  }
+  return "Late"; 
+};
+
+const evaluateStudentBatchStatus = (joinDate, batchTimeStr = "05:30 AM - 07:00 AM") => {
   if (!joinDate) return "Absent";
   const join = new Date(joinDate);
-  const [hours, minutes] = batchStartTimeStr.split(":").map(Number);
-  const batchStart = new Date(join);
-  batchStart.setHours(hours, minutes, 0, 0);
-  const diffMinutes = Math.round((join - batchStart) / 60000);
+  const joinMins = join.getHours() * 60 + join.getMinutes();
 
-  if (diffMinutes <= 5 && diffMinutes >= -30) {
+  const startTimePart = batchTimeStr.split("-")[0].trim(); 
+  const parts = startTimePart.split(" ");
+  let [hours, minutes] = parts[0].split(":").map(Number);
+  const modifier = parts[1]; 
+
+  if (modifier === "PM" && hours < 12) hours += 12;
+  if (modifier === "AM" && hours === 12) hours = 0;
+
+  const batchStartMins = hours * 60 + minutes;
+  const diffMinutes = joinMins - batchStartMins;
+
+  if (diffMinutes >= 0 && diffMinutes <= 5) {
     return "Present";
-  } else if (diffMinutes > 5 && diffMinutes <= 45) {
+  } else if (diffMinutes > 5) {
     return "Late";
-  } else {
-    return "Present";
+  } else if (diffMinutes < 0 && diffMinutes >= -30) {
+    return "Present"; 
+  }
+  return "Late";
+};
+
+// 🚀 High-scale bulk optimized daily record creator using bulkWrite for 1500+ users
+const ensureDailyAttendanceRecords = async (targetDateStr, roleType = "teacher") => {
+  try {
+    const queryRole = roleType === "teacher" 
+      ? { role: { $in: ["teacher", "manager", "admin"] } } 
+      : { role: "student" };
+      
+    const users = await User.find(queryRole).select("_id name phone mode language teacherStage createdAt").lean();
+
+    const parts = targetDateStr.split("-");
+    if (parts.length !== 3) return;
+    const targetDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+    targetDate.setHours(0, 0, 0, 0);
+
+    const bulkOps = [];
+
+    for (const user of users) {
+      const userCreatedAt = new Date(user.createdAt || user._id.getTimestamp());
+      userCreatedAt.setHours(0, 0, 0, 0);
+
+      if (userCreatedAt > targetDate) {
+        continue;
+      }
+
+      const stageVal = user.teacherStage || "stage1";
+
+      bulkOps.push({
+        updateOne: {
+          filter: { userId: user._id, date: targetDateStr, stage: stageVal },
+          update: {
+            $setOnInsert: {
+              userId: user._id,
+              userName: user.name,
+              userPhone: user.phone,
+              userMode: user.mode || "offline",
+              language: user.language || "English",
+              stage: stageVal,
+              date: targetDateStr,
+              status: "Absent",
+              totalMinutesSpent: 0,
+            }
+          },
+          upsert: true
+        }
+      });
+    }
+
+    if (bulkOps.length > 0) {
+      await Attendance.bulkWrite(bulkOps, { ordered: false });
+    }
+  } catch (e) {
+    console.error("Error ensuring daily attendance records:", e);
   }
 };
 
@@ -29,7 +120,13 @@ const markAttendance = async (req, res) => {
 
     const now = new Date();
     const dateStr = getFormattedDate(now);
-    const status = evaluateAttendanceStatus(now, "05:30");
+
+    let status = "Present";
+    if (user.role === "teacher" || user.role === "manager" || user.role === "admin") {
+      status = evaluateTeacherStatus(now);
+    } else {
+      status = evaluateStudentBatchStatus(now, batchTime);
+    }
 
     const record = await Attendance.findOneAndUpdate(
       { userId, stage: stage || user.teacherStage || "Stage 1", date: dateStr },
@@ -38,7 +135,7 @@ const markAttendance = async (req, res) => {
         userPhone: user.phone,
         userMode: user.mode || "offline",
         language: language || user.language || "English",
-        batchTime: batchTime || "05:30 - 07:00",
+        batchTime: batchTime || "05:30 AM - 07:00 AM",
         status: status,
         markedAt: now,
         location: { lat, lng },
@@ -61,7 +158,13 @@ const joinOnlineClass = async (req, res) => {
     const now = joinTime ? new Date(joinTime) : new Date();
     const dateStr = getFormattedDate(now);
     const userStage = stage || user.teacherStage || "Stage 1";
-    const evaluatedStatus = evaluateAttendanceStatus(now, batchStartTime || "05:30");
+    
+    let evaluatedStatus = "Present";
+    if (user.role === "teacher" || user.role === "manager" || user.role === "admin") {
+      evaluatedStatus = evaluateTeacherStatus(now);
+    } else {
+      evaluatedStatus = evaluateStudentBatchStatus(now, batchStartTime || "05:30 AM - 07:00 AM");
+    }
 
     let record = await Attendance.findOne({ userId, stage: userStage, date: dateStr });
 
@@ -148,12 +251,86 @@ const leaveOnlineClass = async (req, res) => {
 
 const getAttendanceSheet = async (req, res) => {
   try {
-    const { date } = req.query;
+    const { date, stage, language, mode, batchTime } = req.query;
+    
+    const targetRole = "student";
+
+    if (date) {
+      await ensureDailyAttendanceRecords(date, targetRole);
+    }
+
     let attendanceQuery = {};
-    if (date) attendanceQuery.date = date;
+    
+    if (date) {
+      const parts = date.split("-");
+      if (parts.length === 3) {
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        const y = parts[2];
+        
+        const possibleFormats = [
+          `${d}-${m}-${y}`,
+          `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`,
+          `${String(d).padStart(2, '0')}-${m}-${y}`,
+          `${d}-${String(m).padStart(2, '0')}-${y}`
+        ];
+
+        attendanceQuery.date = { $in: possibleFormats };
+      } else {
+        attendanceQuery.date = date;
+      }
+    }
+
+    if (stage && stage !== "all") {
+      const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
+      attendanceQuery.stage = { $regex: new RegExp(`^${cleanStage}$`, "i") };
+    }
+    if (language && language !== "all") {
+      attendanceQuery.language = { $regex: new RegExp(`^${language}$`, "i") };
+    }
+    if (mode && mode !== "all") {
+      attendanceQuery.userMode = { $regex: new RegExp(`^${mode}$`, "i") };
+    }
+    if (batchTime && batchTime !== "all") {
+      attendanceQuery.batchTime = batchTime;
+    }
+
     const attendances = await Attendance.find(attendanceQuery).lean();
-    res.status(200).json(attendances || []);
+    const results = [];
+    
+    let targetDate = null;
+    if (date) {
+      const parts = date.split("-");
+      if (parts.length === 3) {
+        targetDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        targetDate.setHours(0, 0, 0, 0);
+      }
+    }
+
+    for (const att of attendances) {
+      let userQuery = { _id: att.userId, role: "student" };
+
+      const user = await User.findOne(userQuery).lean();
+      if (user) {
+        if (targetDate) {
+          const userCreatedAt = new Date(user.createdAt || user._id.getTimestamp());
+          userCreatedAt.setHours(0, 0, 0, 0);
+          if (userCreatedAt > targetDate) {
+            continue; 
+          }
+        }
+
+        results.push({
+          ...att,
+          userName: user.name,
+          userPhone: user.phone,
+        });
+      }
+    }
+
+    res.status(200).json(results);
   } catch (error) {
+    console.error("Get Attendance Sheet Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
@@ -169,52 +346,96 @@ const getAllStudentsFiltered = async (req, res) => {
 
 const getAllTeachersFiltered = async (req, res) => {
   try {
-    const teachers = await User.find({ role: { $in: ["teacher", "admin"] } }).select("-password").lean();
-    res.status(200).json({ total: teachers.length, teachers });
+    const { mode, language, stage } = req.query;
+    let query = { role: { $in: ["teacher", "manager", "admin"] } };
+
+    if (mode && mode.toLowerCase() !== "all") {
+      query.mode = mode.toLowerCase();
+    }
+    if (language && language.toLowerCase() !== "all") {
+      query.language = language.charAt(0).toUpperCase() + language.slice(1).toLowerCase();
+    }
+    if (stage && stage.toLowerCase() !== "all") {
+      const cleanStage = stage.replace(/\s+/g, "").toLowerCase(); 
+      const spacedStage = stage.toLowerCase();                                
+      query.$or = [
+        { teacherStage: { $regex: new RegExp(`^${spacedStage}$`, "i") } },
+        { teacherStage: { $regex: new RegExp(`^${cleanStage}$`, "i") } }
+      ];
+    }
+
+    const teachers = await User.find(query).select("-password").lean();
+    res.status(200).json({
+      success: true,
+      total: teachers.length,
+      teachers: teachers,
+    });
   } catch (error) {
+    console.error("Get Teachers Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-// --- 🚀 STRICT TRAINER ROSTER FILTER (MODE, SECTION & EXACT STAGE MATCHING) ---
 const getTrainerClassroomRoster = async (req, res) => {
   try {
     const { stage, language, section, date, mode } = req.query;
-    
     let studentQuery = { role: "student" };
     
-    // 1. Language Filter
-    if (language && language.toLowerCase() !== "all") {
-      studentQuery.language = { $regex: new RegExp(`^${language}$`, "i") };
-    }
-    
-    // 2. Mode Filter (Online vs Offline enforcement)
     if (mode && mode.toLowerCase() !== "all") {
       studentQuery.mode = { $regex: new RegExp(`^${mode}$`, "i") };
     }
 
-    // 3. Strict Section Filter (Only if online, or match section)
-    if (section && section.toLowerCase() !== "none" && section.toLowerCase() !== "all") {
+    const isHindi = language && language.toLowerCase() === "hindi";
+    if (!isHindi && section && section.toLowerCase() !== "none" && section.toLowerCase() !== "all") {
       const cleanSec = section.trim().toUpperCase();
       studentQuery.onlineSection = { $regex: new RegExp(`^${cleanSec}$`, "i") };
     }
 
-    // 4. Precise Stage Key Normalization
     let rawStage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
     let stageNumber = rawStage.replace(/[^0-9]/g, "");
     if (!stageNumber) stageNumber = "1";
-    const stageKey = `stage${stageNumber}`; // e.g. "stage1" or "stage7"
+    const stageKey = `stage${stageNumber}`;
 
-    const langKey = (language && language.toLowerCase() === "hindi") ? "hindiAccess" : "englishAccess";
-    
-    // Enforce that this exact stage boolean MUST be true
+    const langKey = isHindi ? "hindiAccess" : "englishAccess";
     studentQuery[`${langKey}.${stageKey}`] = true;
 
     const students = await User.find(studentQuery).select("-password").lean();
-    const dateStr = date || getFormattedDate(new Date());
-    const attendanceRecords = await Attendance.find({ date: dateStr }).lean();
 
-    const roster = students.map((student) => {
+    let targetDateStr = date || getFormattedDate(new Date());
+    let possibleFormats = [targetDateStr];
+
+    const parts = targetDateStr.split("-");
+    let targetDate = null;
+    if (parts.length === 3) {
+      const d = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      const y = parts[2];
+      
+      targetDate = new Date(parseInt(y), m - 1, d);
+      targetDate.setHours(0, 0, 0, 0);
+
+      possibleFormats = [
+        `${d}-${m}-${y}`,
+        `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`,
+        `${String(d).padStart(2, '0')}-${m}-${y}`,
+        `${d}-${String(d).padStart(2, '0')}-${y}`
+      ];
+    }
+
+    const attendanceRecords = await Attendance.find({ date: { $in: possibleFormats } }).lean();
+
+    const filteredStudents = students.filter((student) => {
+      if (targetDate) {
+        const studentCreatedAt = new Date(student.createdAt || student._id.getTimestamp());
+        studentCreatedAt.setHours(0, 0, 0, 0);
+        if (studentCreatedAt > targetDate) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const roster = filteredStudents.map((student) => {
       const record = attendanceRecords.find(
         (att) => att.userId.toString() === student._id.toString()
       );
@@ -235,10 +456,7 @@ const getTrainerClassroomRoster = async (req, res) => {
       };
     });
 
-    res.status(200).json({
-      total: roster.length,
-      students: roster,
-    });
+    res.status(200).json({ total: roster.length, students: roster });
   } catch (error) {
     console.error("Trainer Classroom Roster Error:", error);
     res.status(500).json({ message: "Server Error" });
