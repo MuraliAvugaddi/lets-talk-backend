@@ -1,7 +1,6 @@
 const Attendance = require("../../Models/attendance");
 const User = require("../../Models/users");
 
-// 🚀 FIXED: Robust date formatter that falls back to today's local date if format is invalid
 const getFormattedDate = (d = new Date()) => {
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -57,7 +56,6 @@ const evaluateStudentBatchStatus = (joinDate, batchTimeStr = "05:30 AM - 07:00 A
   return "Late";
 };
 
-// 🚀 High-scale bulk optimized daily record creator using bulkWrite for 1500+ users
 const ensureDailyAttendanceRecords = async (targetDateStr, roleType = "teacher") => {
   try {
     const queryRole = roleType === "teacher" 
@@ -81,7 +79,7 @@ const ensureDailyAttendanceRecords = async (targetDateStr, roleType = "teacher")
         continue;
       }
 
-      const stageVal = user.teacherStage || "stage1";
+      const stageVal = user.teacherStage || "Stage 1";
 
       bulkOps.push({
         updateOne: {
@@ -120,6 +118,7 @@ const markAttendance = async (req, res) => {
 
     const now = new Date();
     const dateStr = getFormattedDate(now);
+    const targetStage = stage || user.teacherStage || "Stage 1";
 
     let status = "Present";
     if (user.role === "teacher" || user.role === "manager" || user.role === "admin") {
@@ -129,7 +128,7 @@ const markAttendance = async (req, res) => {
     }
 
     const record = await Attendance.findOneAndUpdate(
-      { userId, stage: stage || user.teacherStage || "Stage 1", date: dateStr },
+      { userId, stage: targetStage, date: dateStr },
       {
         userName: user.name,
         userPhone: user.phone,
@@ -252,7 +251,6 @@ const leaveOnlineClass = async (req, res) => {
 const getAttendanceSheet = async (req, res) => {
   try {
     const { date, stage, language, mode, batchTime } = req.query;
-    
     const targetRole = "student";
 
     if (date) {
@@ -260,7 +258,6 @@ const getAttendanceSheet = async (req, res) => {
     }
 
     let attendanceQuery = {};
-    
     if (date) {
       const parts = date.split("-");
       if (parts.length === 3) {
@@ -296,8 +293,10 @@ const getAttendanceSheet = async (req, res) => {
     }
 
     const attendances = await Attendance.find(attendanceQuery).lean();
-    const results = [];
-    
+    const userIds = [...new Set(attendances.map(att => att.userId))];
+    const users = await User.find({ _id: { $in: userIds }, role: "student" }).select("name phone createdAt mode").lean();
+    const userMap = new Map(users.map(u => [u._id.toString(), u]));
+
     let targetDate = null;
     if (date) {
       const parts = date.split("-");
@@ -307,13 +306,12 @@ const getAttendanceSheet = async (req, res) => {
       }
     }
 
+    const results = [];
     for (const att of attendances) {
-      let userQuery = { _id: att.userId, role: "student" };
-
-      const user = await User.findOne(userQuery).lean();
+      const user = userMap.get(att.userId.toString());
       if (user) {
         if (targetDate) {
-          const userCreatedAt = new Date(user.createdAt || user._id.getTimestamp());
+          const userCreatedAt = new Date(user.createdAt || att.userId.getTimestamp());
           userCreatedAt.setHours(0, 0, 0, 0);
           if (userCreatedAt > targetDate) {
             continue; 
@@ -357,7 +355,7 @@ const getAllTeachersFiltered = async (req, res) => {
     }
     if (stage && stage.toLowerCase() !== "all") {
       const cleanStage = stage.replace(/\s+/g, "").toLowerCase(); 
-      const spacedStage = stage.toLowerCase();                                
+      const spacedStage = stage.toLowerCase();                            
       query.$or = [
         { teacherStage: { $regex: new RegExp(`^${spacedStage}$`, "i") } },
         { teacherStage: { $regex: new RegExp(`^${cleanStage}$`, "i") } }
@@ -376,6 +374,7 @@ const getAllTeachersFiltered = async (req, res) => {
   }
 };
 
+// 🚀 FIXED: Strictly matches attendance records for the specific teacher's stage & language
 const getTrainerClassroomRoster = async (req, res) => {
   try {
     const { stage, language, section, date, mode } = req.query;
@@ -395,6 +394,7 @@ const getTrainerClassroomRoster = async (req, res) => {
     let stageNumber = rawStage.replace(/[^0-9]/g, "");
     if (!stageNumber) stageNumber = "1";
     const stageKey = `stage${stageNumber}`;
+    const formattedStageName = `Stage ${stageNumber}`;
 
     const langKey = isHindi ? "hindiAccess" : "englishAccess";
     studentQuery[`${langKey}.${stageKey}`] = true;
@@ -422,7 +422,16 @@ const getTrainerClassroomRoster = async (req, res) => {
       ];
     }
 
-    const attendanceRecords = await Attendance.find({ date: { $in: possibleFormats } }).lean();
+    // 🚀 Strict query filtering by stage and language
+    const attendanceQuery = {
+      date: { $in: possibleFormats },
+      stage: { $regex: new RegExp(`^stage\\s*${stageNumber}$`, "i") },
+    };
+    if (language && language !== "all") {
+      attendanceQuery.language = { $regex: new RegExp(`^${language}$`, "i") };
+    }
+
+    const attendanceRecords = await Attendance.find(attendanceQuery).lean();
 
     const filteredStudents = students.filter((student) => {
       if (targetDate) {
@@ -481,7 +490,8 @@ const autoMarkAbsent = async (req, res) => {
     let count = 0;
 
     for (const user of allUsers) {
-      const record = await Attendance.findOne({ userId: user._id, date: dateStr });
+      const userStage = user.teacherStage || "Stage 1";
+      const record = await Attendance.findOne({ userId: user._id, date: dateStr, stage: userStage });
       if (!record) {
         await Attendance.create({
           userId: user._id,
@@ -490,7 +500,7 @@ const autoMarkAbsent = async (req, res) => {
           userMode: user.mode || "offline",
           language: user.language || "English",
           date: dateStr,
-          stage: user.teacherStage || "Stage 1",
+          stage: userStage,
           status: "Absent",
           totalMinutesSpent: 0,
         });
