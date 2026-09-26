@@ -64,6 +64,11 @@ const registerUser = async (req, res) => {
     });
 
     if (user) {
+      // 🚀 Broadcast new user registration instantly to connected clients/trainers
+      if (req.io) {
+        req.io.emit('student_update', { userId: user._id });
+      }
+
       res.status(201).json({
         success: true,
         token: generateToken(user._id),
@@ -267,6 +272,9 @@ const updateUserAccess = async (req, res) => {
         mode: user.mode,
         onlineSection: user.onlineSection,
       });
+
+      // 🚀 Broadcast to all listening trainers/dashboards instantly
+      req.io.emit('student_update', { userId: user._id });
     }
 
     res.status(200).json({ message: "User access updated successfully", user });
@@ -294,6 +302,9 @@ const updateStudentStatus = async (req, res) => {
         onlineSection: user.onlineSection,
         mode: user.mode,
       });
+
+      // 🚀 Broadcast to all listening trainers/dashboards instantly
+      req.io.emit('student_update', { userId: user._id });
     }
 
     res.status(200).json({ message: "Student status updated", user });
@@ -308,6 +319,10 @@ const deleteUser = async (req, res) => {
     const { id } = req.params;
     const user = await User.findByIdAndDelete(id);
     if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (req.io) {
+      req.io.emit('student_update', { userId: id });
+    }
 
     res.status(200).json({ message: "User deleted successfully" });
   } catch (error) {
