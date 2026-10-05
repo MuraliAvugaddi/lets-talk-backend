@@ -20,6 +20,8 @@ const userRoutes = require("./Routes/UserRoutes/authRoute");
 const testRoutes = require("./Routes/UserRoutes/testRoute");
 const liveRoutes = require("./Routes/UserRoutes/liveRoute");
 const streamRoute = require("./Routes/UserRoutes/streamRoute");
+const sectionMergeRoutes = require("./Routes/UserRoutes/sectionMergeRoute");
+const feeRoutes = require("./Routes/UserRoutes/feeRoute");
 
 // =====================================================
 // CONTROLLERS
@@ -62,10 +64,9 @@ const PORT = process.env.PORT || 5000;
 // =====================================================
 
 app.use(cors());
-
 app.use(express.json());
 
-// Attach Socket.IO to every request
+// Attach Socket.IO to every request so controllers can broadcast events live
 app.use((req, res, next) => {
   req.io = io;
   next();
@@ -76,12 +77,11 @@ app.use((req, res, next) => {
 // =====================================================
 
 app.use("/api", userRoutes);
-
 app.use("/api/test", testRoutes);
-
 app.use("/api/live", liveRoutes);
-
 app.use("/api/stream", streamRoute);
+app.use("/api/admin", sectionMergeRoutes);
+app.use("/api/fee", feeRoutes);
 
 // =====================================================
 // BASIC HEALTH CHECK
@@ -100,35 +100,38 @@ app.get("/", (req, res) => {
 });
 
 // =====================================================
-// SOCKET CONNECTION
+// SOCKET CONNECTION & ROOM MAPPING
 // =====================================================
 
 io.on("connection", (socket) => {
-  console.log("🔌 User connected:", socket.id);
+  console.log("🔌 Client connected:", socket.id);
 
   // -----------------------------------------------
-  // JOIN USER ROOM
+  // JOIN USER ROOM (Ensures student receives permission updates)
   // -----------------------------------------------
-
   socket.on("join_user_room", (userId) => {
     if (!userId) {
-      console.log("⚠️ No userId provided for room");
+      console.log("⚠️ No userId provided for room join");
       return;
     }
+    const cleanId = String(userId).trim();
+    socket.join(cleanId);
+    console.log(`👤 User joined personal update room: ${cleanId}`);
+  });
 
-    socket.join(String(userId));
-
-    console.log(`👤 User ${userId} joined room`);
+  // -----------------------------------------------
+  // JOIN ADMIN ROOM
+  // -----------------------------------------------
+  socket.on("join_admin_room", () => {
+    socket.join("admin_room");
+    console.log(`🛠️ Admin joined broadcast room: ${socket.id}`);
   });
 
   // -----------------------------------------------
   // DISCONNECT
   // -----------------------------------------------
-
   socket.on("disconnect", (reason) => {
-    console.log(
-      `🔌 User disconnected: ${socket.id} | Reason: ${reason}`
-    );
+    console.log(`🔌 Client disconnected: ${socket.id} | Reason: ${reason}`);
   });
 });
 
@@ -144,7 +147,7 @@ const connectDatabase = async () => {
 
     await mongoose.connect(process.env.MONGO_URI, {
       serverSelectionTimeoutMS: 10000,
-      maxPoolSize: 50, // 🚀 Scaled connection pool for 1500+ users
+      maxPoolSize: 50,
       minPoolSize: 10,
     });
 
@@ -158,7 +161,6 @@ const connectDatabase = async () => {
     console.error(error.message);
     console.error("========================================");
 
-    // Exit so Render/server can restart the application
     process.exit(1);
   }
 };
@@ -180,59 +182,19 @@ mongoose.connection.on("disconnected", () => {
 });
 
 // =====================================================
-// CRON JOB 1
-// AUTO MARK ABSENT
-//
-// Every day at 6:50 PM IST
+// CRON JOB 1: AUTO MARK ABSENT
 // =====================================================
 
 const autoAbsentCron = cron.schedule(
   "50 18 * * *",
   async () => {
-    console.log("");
-    console.log("========================================");
-    console.log("🕒 6:50 PM AUTO-ABSENT CRON STARTED");
-    console.log("🇮🇳 Timezone: Asia/Kolkata");
-    console.log(`⏰ Server time: ${new Date().toISOString()}`);
-    console.log("========================================");
-
-    // -----------------------------------------------
-    // Check MongoDB
-    // -----------------------------------------------
-
-    if (mongoose.connection.readyState !== 1) {
-      console.error(
-        "❌ Auto-absent skipped: MongoDB is not connected"
-      );
-
-      console.log("========================================");
-      console.log("🕒 AUTO-ABSENT CRON FINISHED");
-      console.log("========================================");
-
-      return;
-    }
-
-    const startTime = Date.now();
-
+    if (mongoose.connection.readyState !== 1) return;
     try {
-      console.log("📌 Starting autoMarkAbsent()...");
-
       await autoMarkAbsent();
-
-      const executionTime = Date.now() - startTime;
-
-      console.log(
-        `✅ Auto-absent completed successfully in ${executionTime} ms`
-      );
+      console.log("✅ Auto-absent completed successfully");
     } catch (error) {
-      console.error("❌ Auto-absent cron error:");
-      console.error(error);
+      console.error("❌ Auto-absent cron error:", error);
     }
-
-    console.log("========================================");
-    console.log("🕒 AUTO-ABSENT CRON FINISHED");
-    console.log("========================================");
-    console.log("");
   },
   {
     timezone: "Asia/Kolkata",
@@ -241,80 +203,25 @@ const autoAbsentCron = cron.schedule(
 );
 
 // =====================================================
-// CRON JOB 2
-// MONTHLY FEE RESET
-//
-// Every month on the 1st day at 12:00 AM IST
+// CRON JOB 2: MONTHLY FEE RESET
 // =====================================================
 
 const monthlyFeeCron = cron.schedule(
   "0 0 1 * *",
   async () => {
-    console.log("");
-    console.log("========================================");
-    console.log("🕛 MONTHLY FEE RESET CRON STARTED");
-    console.log("🇮🇳 Timezone: Asia/Kolkata");
-    console.log(`⏰ Server time: ${new Date().toISOString()}`);
-    console.log("========================================");
-
-    // -----------------------------------------------
-    // Check MongoDB
-    // -----------------------------------------------
-
-    if (mongoose.connection.readyState !== 1) {
-      console.error(
-        "❌ Monthly fee reset skipped: MongoDB is not connected"
-      );
-
-      console.log("========================================");
-      console.log("🕛 MONTHLY FEE RESET CRON FINISHED");
-      console.log("========================================");
-
-      return;
-    }
-
-    const startTime = Date.now();
-
+    if (mongoose.connection.readyState !== 1) return;
     try {
-      console.log(
-        "📌 Starting resetMonthlyFeesForNewMonth()..."
-      );
-
       await resetMonthlyFeesForNewMonth();
-
-      const executionTime = Date.now() - startTime;
-
-      console.log(
-        `✅ Monthly fee reset completed successfully in ${executionTime} ms`
-      );
+      console.log("✅ Monthly fee reset completed successfully");
     } catch (error) {
-      console.error("❌ Monthly fee reset cron error:");
-      console.error(error);
+      console.error("❌ Monthly fee reset cron error:", error);
     }
-
-    console.log("========================================");
-    console.log("🕛 MONTHLY FEE RESET CRON FINISHED");
-    console.log("========================================");
-    console.log("");
   },
   {
     timezone: "Asia/Kolkata",
     noOverlap: true,
   }
 );
-
-// =====================================================
-// CRON STATUS
-// =====================================================
-
-console.log("========================================");
-console.log("⏰ CRON JOBS REGISTERED");
-console.log("========================================");
-console.log("🕒 Auto Absent    : Every day at 6:50 PM IST");
-console.log("🕛 Monthly Reset  : 1st day of month at 12:00 AM IST");
-console.log("🌏 Timezone       : Asia/Kolkata");
-console.log("🔒 No Overlap     : Enabled");
-console.log("========================================");
 
 // =====================================================
 // START SERVER
@@ -322,15 +229,7 @@ console.log("========================================");
 
 const startServer = async () => {
   try {
-    // -----------------------------------------------
-    // Connect MongoDB first
-    // -----------------------------------------------
-
     await connectDatabase();
-
-    // -----------------------------------------------
-    // Start HTTP server
-    // -----------------------------------------------
 
     server.listen(PORT, "0.0.0.0", () => {
       console.log("");
@@ -351,77 +250,31 @@ const startServer = async () => {
 };
 
 // =====================================================
-// GRACEFUL SHUTDOWN
+// GRACEFUL SHUTDOWN & UNHANDLED ERRORS
 // =====================================================
 
 const shutdown = async (signal) => {
-  console.log("");
-  console.log(`🛑 ${signal} received`);
-  console.log("🛑 Shutting down server...");
-
   try {
-    // Stop cron jobs
     autoAbsentCron.stop();
     monthlyFeeCron.stop();
-
-    console.log("⏰ Cron jobs stopped");
-
-    // Close HTTP server
-    server.close(() => {
-      console.log("🌐 HTTP server closed");
-    });
-
-    // Close MongoDB
+    server.close();
     await mongoose.connection.close();
-
-    console.log("🗄️ MongoDB connection closed");
-
-    console.log("✅ Server shutdown completed");
-
     process.exit(0);
   } catch (error) {
-    console.error("❌ Shutdown error:", error);
     process.exit(1);
   }
 };
 
-// =====================================================
-// PROCESS SIGNALS
-// =====================================================
-
-process.on("SIGINT", () => {
-  shutdown("SIGINT");
-});
-
-process.on("SIGTERM", () => {
-  shutdown("SIGTERM");
-});
-
-// =====================================================
-// UNHANDLED ERRORS
-// =====================================================
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 process.on("unhandledRejection", (reason) => {
-  console.error("========================================");
-  console.error("❌ UNHANDLED PROMISE REJECTION");
-  console.error(reason);
-  console.error("========================================");
+  console.error("❌ UNHANDLED PROMISE REJECTION", reason);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("========================================");
-  console.error("❌ UNCAUGHT EXCEPTION");
-  console.error(error);
-  console.error("========================================");
-
-  // Give the process a moment to log the error
-  setTimeout(() => {
-    process.exit(1);
-  }, 1000);
+  console.error("❌ UNCAUGHT EXCEPTION", error);
+  setTimeout(() => process.exit(1), 1000);
 });
-
-// =====================================================
-// START APPLICATION
-// =====================================================
 
 startServer();

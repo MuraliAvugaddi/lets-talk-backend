@@ -1,11 +1,12 @@
 const User = require("../../Models/users");
 const Attendance = require("../../Models/attendance");
+const FeeHistory = require("../../Models/feeHistory"); // 🚀 Required from models folder
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET || "fallback_secret", {
-    expiresIn: "365d", // 🚀 Extended to 365 days (1 year)
+    expiresIn: "365d",
   });
 };
 
@@ -17,20 +18,34 @@ const sanitizeSection = (sec) => {
   return matched || "None";
 };
 
-// --- 🔄 AUTOMATIC MONTHLY FEE RESET FOR NEW MONTH ---
+// --- 🔄 AUTOMATIC MONTHLY FEE ARCHIVE & RESET ON 1ST OF MONTH ---
 const resetMonthlyFeesForNewMonth = async () => {
   try {
+    const now = new Date();
+    const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthYear = `${String(prevDate.getMonth() + 1).padStart(2, '0')}-${prevDate.getFullYear()}`;
+
+    const totalStudents = await User.countDocuments({ role: "student" });
+    const totalPaid = await User.countDocuments({ role: "student", feeStatus: "paid" });
+    const totalUnpaid = totalStudents - totalPaid;
+
+    await FeeHistory.findOneAndUpdate(
+      { monthYear: prevMonthYear },
+      { totalStudents, totalPaid, totalUnpaid, archivedAt: new Date() },
+      { upsert: true, new: true }
+    );
+
     const result = await User.updateMany(
       { role: "student" },
-      { $set: { feeStatus: "unpaid" } }
+      { $set: { feeStatus: "unpaid", feePaymentStatus: "not_submitted", feePaymentScreenshot: "" } }
     );
-    console.log(`✅ Monthly Fee Reset Completed: ${result.modifiedCount} students marked as unpaid for the new month.`);
+
+    console.log(`✅ Monthly Fee Reset & Archive Completed: ${result.modifiedCount} students marked as unpaid for the new month.`);
   } catch (err) {
     console.error("❌ Error running monthly fee reset cron:", err);
   }
 };
 
-// --- 1. REGISTER USER (CLEAN DEFAULT ACCESS) ---
 const registerUser = async (req, res) => {
   try {
     const { name, phone, password, mode, onlineSection, language, role, teacherStage, teacherSection } = req.body;
@@ -57,16 +72,15 @@ const registerUser = async (req, res) => {
       role: role || "student",
       teacherStage: teacherStage || "stage1",
       teacherSection: teacherSection || "None",
-      // 🚀 Ensure ALL stages default to false so new/re-registered users start locked
       englishAccess: { stage1: false, stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, stage7: false },
       hindiAccess: { stage1: false, stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, stage7: false },
       feeStatus: "unpaid",
     });
 
     if (user) {
-      // 🚀 Broadcast new user registration instantly to connected clients/trainers
       if (req.io) {
         req.io.emit('student_update', { userId: user._id });
+        req.io.emit('new_user_registered', { userId: user._id });
       }
 
       res.status(201).json({
@@ -101,7 +115,6 @@ const registerUser = async (req, res) => {
 const loginUser = async (req, res) => {
   try {
     const { phone, password } = req.body;
-
     if (!phone || !password) {
       return res.status(400).json({ message: "Please provide phone and password" });
     }
@@ -147,9 +160,7 @@ const resetPassword = async (req, res) => {
     }
 
     const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
@@ -165,9 +176,7 @@ const resetPassword = async (req, res) => {
 const getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select("-password");
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
     res.status(200).json(user);
   } catch (error) {
     console.error("Get Profile Error:", error);
@@ -178,7 +187,6 @@ const getUserProfile = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const { mode } = req.query;
-    // 🚀 Explicitly restrict to student roles only
     let query = { role: "student" }; 
 
     if (mode && mode.toLowerCase() !== "all") {
@@ -204,9 +212,7 @@ const getUsersByStage = async (req, res) => {
     let query = { role: "student" };
     if (stage && stage.toLowerCase() !== "all") {
       const cleanStage = stage.replace(/\s+/g, "");
-      query.teacherStage = { 
-        $regex: new RegExp(`^${cleanStage}$`, "i") 
-      };
+      query.teacherStage = { $regex: new RegExp(`^${cleanStage}$`, "i") };
     }
 
     const users = await User.find(query).select("-password").lean();
@@ -225,11 +231,9 @@ const getAllTeachersFiltered = async (req, res) => {
     if (mode && mode.toLowerCase() !== "all") {
       query.mode = { $regex: new RegExp(`^${mode.trim()}$`, "i") };
     }
-
     if (language && language.toLowerCase() !== "all") {
       query.language = { $regex: new RegExp(`^${language.trim()}$`, "i") };
     }
-
     if (stage && stage.toLowerCase() !== "all") {
       const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
       const spacedStage = stage.toLowerCase();
@@ -240,17 +244,12 @@ const getAllTeachersFiltered = async (req, res) => {
     }
 
     const teachers = await User.find(query).select("-password").lean();
-    res.status(200).json({
-      success: true,
-      total: teachers.length,
-      teachers: teachers,
-    });
+    res.status(200).json({ success: true, total: teachers.length, teachers });
   } catch (error) {
     console.error("Get Teachers Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
-
 
 const updateUserAccess = async (req, res) => {
   try {
@@ -272,8 +271,6 @@ const updateUserAccess = async (req, res) => {
         mode: user.mode,
         onlineSection: user.onlineSection,
       });
-
-      // 🚀 Broadcast to all listening trainers/dashboards instantly
       req.io.emit('student_update', { userId: user._id });
     }
 
@@ -302,8 +299,6 @@ const updateStudentStatus = async (req, res) => {
         onlineSection: user.onlineSection,
         mode: user.mode,
       });
-
-      // 🚀 Broadcast to all listening trainers/dashboards instantly
       req.io.emit('student_update', { userId: user._id });
     }
 

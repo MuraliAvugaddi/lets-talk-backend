@@ -15,6 +15,15 @@ const userSchema = new mongoose.Schema(
     feeStatus: { type: String, enum: ["paid", "unpaid"], default: "unpaid" },
     lastFeePaymentDate: { type: Date, default: null },
 
+    // 🚀 Added Fee Payment Verification Fields for Cloudinary Screenshots
+    feePaymentScreenshot: { type: String, default: "" },
+    feePaymentStatus: { 
+      type: String, 
+      enum: ["not_submitted", "pending_verification", "verified", "rejected"], 
+      default: "not_submitted" 
+    },
+    feeSubmittedAt: { type: Date, default: null },
+
     sessionToken: { type: String, default: "" },
 
     englishAccess: {

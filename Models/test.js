@@ -13,11 +13,10 @@ const testSchema = new mongoose.Schema({
   durationMinutes: { type: Number, default: 25 },
   questions: [questionSchema], // List of questions
   
-  // ⬇️ AUTO DELETE: This field creates a TTL index in MongoDB
+  // 🚀 TTL `expires` field removed so test results & data remain permanently saved
   createdAt: { 
     type: Date, 
     default: Date.now, 
-    expires: '48h' // Document will be automatically removed after 48 hours
   } 
 }, { timestamps: true });
 

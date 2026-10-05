@@ -69,7 +69,8 @@ router.get("/admin/teachers", getAllTeachersFiltered);
 // ==============================
 router.post("/admin/notification", protect, setNotification);
 router.delete("/admin/notification", protect, deleteNotification);
-router.get("/user/notification", getNotification);
+router.get("/admin/notification", getNotification); // Used by Admin Dashboard to check active status
+router.get("/user/notification", getNotification);  // Used by Student App
 
 // ==============================
 //       ATTENDANCE ROUTES

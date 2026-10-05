@@ -1,5 +1,6 @@
 const Attendance = require("../../Models/attendance");
 const User = require("../../Models/users");
+const SectionMerge = require("../../Models/sectionMerge");
 
 const getFormattedDate = (d = new Date()) => {
   const day = String(d.getDate()).padStart(2, '0');
@@ -374,27 +375,42 @@ const getAllTeachersFiltered = async (req, res) => {
   }
 };
 
-// 🚀 FIXED: Strictly matches attendance records for the specific teacher's stage & language
+// 🚀 FIXED: Allows offline students with explicit Hindi stage access to appear on online Hindi trainer rosters
 const getTrainerClassroomRoster = async (req, res) => {
   try {
     const { stage, language, section, date, mode } = req.query;
     let studentQuery = { role: "student" };
     
-    if (mode && mode.toLowerCase() !== "all") {
+    const isHindi = language && language.toLowerCase() === "hindi";
+
+    if (mode && mode.toLowerCase() !== "all" && !isHindi) {
       studentQuery.mode = { $regex: new RegExp(`^${mode}$`, "i") };
     }
 
-    const isHindi = language && language.toLowerCase() === "hindi";
+    let allowedSections = [];
     if (!isHindi && section && section.toLowerCase() !== "none" && section.toLowerCase() !== "all") {
       const cleanSec = section.trim().toUpperCase();
-      studentQuery.onlineSection = { $regex: new RegExp(`^${cleanSec}$`, "i") };
+      allowedSections.push(cleanSec);
+
+      let rawStage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
+      const activeMerges = await SectionMerge.find({
+        language: { $regex: new RegExp(`^${language || 'English'}$`, "i") },
+        stage: rawStage,
+        hostSection: cleanSec,
+        isActive: true,
+      }).lean();
+
+      for (const m of activeMerges) {
+        allowedSections.push(m.guestSection.toUpperCase());
+      }
+
+      studentQuery.onlineSection = { $in: allowedSections };
     }
 
     let rawStage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
     let stageNumber = rawStage.replace(/[^0-9]/g, "");
     if (!stageNumber) stageNumber = "1";
     const stageKey = `stage${stageNumber}`;
-    const formattedStageName = `Stage ${stageNumber}`;
 
     const langKey = isHindi ? "hindiAccess" : "englishAccess";
     studentQuery[`${langKey}.${stageKey}`] = true;
@@ -422,7 +438,6 @@ const getTrainerClassroomRoster = async (req, res) => {
       ];
     }
 
-    // 🚀 Strict query filtering by stage and language
     const attendanceQuery = {
       date: { $in: possibleFormats },
       stage: { $regex: new RegExp(`^stage\\s*${stageNumber}$`, "i") },
@@ -478,6 +493,7 @@ const getMyAttendance = async (req, res) => {
     const records = await Attendance.find({ userId }).sort({ createdAt: -1 });
     res.status(200).json({ total: records.length, records });
   } catch (error) {
+    console.error("Get My Attendance Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };

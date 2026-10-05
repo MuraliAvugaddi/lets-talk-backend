@@ -11,11 +11,17 @@ const updateTest = async (req, res) => {
       return res.status(400).json({ message: "Missing required test fields" });
     }
 
+    const cleanLang = language.trim();
+    const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
+
     const test = await Test.findOneAndUpdate(
-      { language, stage },
+      { 
+        language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
+        stage: { $regex: new RegExp(`^${cleanStage}$`, "i") } 
+      },
       {
-        language,
-        stage,
+        language: cleanLang,
+        stage: cleanStage,
         isActive: isActive !== undefined ? isActive : true,
         questions,
         durationMinutes: durationMinutes || 25,
@@ -34,7 +40,14 @@ const updateTest = async (req, res) => {
 const deleteTest = async (req, res) => {
   try {
     const { language, stage } = req.body;
-    await Test.findOneAndDelete({ language, stage });
+    const cleanLang = language ? language.trim() : "";
+    const cleanStage = stage ? stage.replace(/\s+/g, "").toLowerCase() : "";
+
+    await Test.findOneAndDelete({ 
+      language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
+      stage: { $regex: new RegExp(`^${cleanStage}$`, "i") } 
+    });
+
     res.status(200).json({ message: "Test deleted successfully" });
   } catch (error) {
     console.error("Delete Test Error:", error);
@@ -47,8 +60,13 @@ const getResults = async (req, res) => {
   try {
     const { language, stage } = req.query;
     let query = {};
-    if (language) query.language = language;
-    if (stage) query.stage = stage;
+    if (language && language !== "all") {
+      query.language = { $regex: new RegExp(`^${language.trim()}$`, "i") };
+    }
+    if (stage && stage !== "all") {
+      const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
+      query.stage = { $regex: new RegExp(`^${cleanStage}$`, "i") };
+    }
 
     const results = await Result.find(query).sort({ createdAt: -1 });
     res.status(200).json(results);
@@ -58,13 +76,20 @@ const getResults = async (req, res) => {
   }
 };
 
-// --- 4. USER: GET TEST QUESTIONS ---
+// --- 4. USER: GET TEST QUESTIONS (Case-Insensitive Match) ---
 const getTest = async (req, res) => {
   try {
     const { language, stage, userId } = req.query;
 
+    const cleanLang = language ? language.trim() : "";
+    const cleanStage = stage ? stage.replace(/\s+/g, "").toLowerCase() : "";
+
     if (userId) {
-      const existingResult = await Result.findOne({ userId, language, stage });
+      const existingResult = await Result.findOne({ 
+        userId, 
+        language: { $regex: new RegExp(`^${cleanLang}$`, "i") },
+        stage: { $regex: new RegExp(`^${cleanStage}$`, "i") }
+      });
       if (existingResult) {
         return res.status(200).json({
           completed: true,
@@ -74,7 +99,12 @@ const getTest = async (req, res) => {
       }
     }
 
-    const test = await Test.findOne({ language, stage, isActive: true });
+    const test = await Test.findOne({ 
+      language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
+      stage: { $regex: new RegExp(`^${cleanStage}$`, "i") }, 
+      isActive: true 
+    });
+
     if (!test) {
       return res.status(404).json({ message: "No active test found" });
     }
@@ -93,10 +123,16 @@ const getTest = async (req, res) => {
 // --- 5. USER: SUBMIT ANSWERS ---
 const submitTest = async (req, res) => {
   try {
-    const { userId, userName, userPhone, userMode, language, stage, answers } =
-      req.body;
+    const { userId, userName, userPhone, userMode, language, stage, answers } = req.body;
 
-    const test = await Test.findOne({ language, stage });
+    const cleanLang = language ? language.trim() : "";
+    const cleanStage = stage ? stage.replace(/\s+/g, "").toLowerCase() : "";
+
+    const test = await Test.findOne({ 
+      language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
+      stage: { $regex: new RegExp(`^${cleanStage}$`, "i") } 
+    });
+
     if (!test) {
       return res.status(404).json({ message: "Test not found" });
     }
@@ -116,8 +152,8 @@ const submitTest = async (req, res) => {
       userName,
       userPhone,
       userMode: userMode || "offline",
-      language,
-      stage,
+      language: cleanLang,
+      stage: cleanStage,
       score: calculatedScore,
       totalQuestions,
       answers,
@@ -145,7 +181,7 @@ const getMyTestResults = async (req, res) => {
 
     let query = { userId };
     if (language && language.toLowerCase() !== "all") {
-      query.language = language;
+      query.language = { $regex: new RegExp(`^${language.trim()}$`, "i") };
     }
 
     const results = await Result.find(query).sort({ createdAt: -1 });
