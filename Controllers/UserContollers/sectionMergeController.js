@@ -1,4 +1,5 @@
 const SectionMerge = require("../../Models/sectionMerge");
+const { normStage, normLanguage, normSection, isValidId } = require("../../utils/normalize");
 
 const getActiveMerges = async (req, res) => {
   try {
@@ -10,24 +11,27 @@ const getActiveMerges = async (req, res) => {
   }
 };
 
+// POST /api/admin/merge-sections { language, stage, hostSection, guestSection }
 const mergeSections = async (req, res) => {
   try {
-    let { language, stage, hostSection, guestSection } = req.body;
-    stage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
+    const language = normLanguage(req.body.language) || "English";
+    const stage = normStage(req.body.stage) || "stage1";
+    const hostSection = normSection(req.body.hostSection);
+    const guestSection = normSection(req.body.guestSection);
 
-    let existing = await SectionMerge.findOne({ language, stage, guestSection, isActive: true });
-    if (existing) {
-      existing.hostSection = hostSection;
-      await existing.save();
-    } else {
-      existing = await SectionMerge.create({ language, stage, hostSection, guestSection, isActive: true });
+    if (hostSection === "None" || guestSection === "None" || hostSection === guestSection) {
+      return res.status(400).json({ message: "Choose two different sections (A-E)." });
     }
 
-    if (req.io) {
-      req.io.emit('merge_updated', { language, stage, hostSection, guestSection });
-    }
+    const merge = await SectionMerge.findOneAndUpdate(
+      { language, stage, guestSection, isActive: true },
+      { $set: { hostSection }, $setOnInsert: { language, stage, guestSection, isActive: true } },
+      { upsert: true, new: true }
+    );
 
-    res.status(200).json({ success: true, message: "Sections merged successfully", merge: existing });
+    if (req.io) req.io.emit("merge_updated", { language, stage, hostSection, guestSection });
+
+    res.status(200).json({ success: true, message: "Sections merged successfully", merge });
   } catch (error) {
     console.error("Merge Sections Error:", error);
     res.status(500).json({ message: "Server Error" });
@@ -36,13 +40,9 @@ const mergeSections = async (req, res) => {
 
 const cancelMerge = async (req, res) => {
   try {
-    const { id } = req.params;
-    await SectionMerge.findByIdAndDelete(id);
-
-    if (req.io) {
-      req.io.emit('merge_updated', { cancelled: true });
-    }
-
+    if (!isValidId(req.params.id)) return res.status(400).json({ message: "Invalid id" });
+    await SectionMerge.findByIdAndDelete(req.params.id);
+    if (req.io) req.io.emit("merge_updated", { cancelled: true });
     res.status(200).json({ success: true, message: "Merge cancelled successfully" });
   } catch (error) {
     console.error("Cancel Merge Error:", error);
@@ -50,21 +50,15 @@ const cancelMerge = async (req, res) => {
   }
 };
 
+// GET /api/admin/resolve-section?language=&stage=&section=
 const resolveEffectiveSection = async (req, res) => {
   try {
-    const { language, stage, section } = req.query;
-    const cleanStage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
-    const cleanSection = section ? section.toString().toUpperCase().trim() : "A";
+    const language = normLanguage(req.query.language) || "English";
+    const stage = normStage(req.query.stage) || "stage1";
+    const section = normSection(req.query.section || "A");
 
-    const merge = await SectionMerge.findOne({
-      language: { $regex: new RegExp(`^${language || 'English'}$`, "i") },
-      stage: cleanStage,
-      guestSection: cleanSection,
-      isActive: true,
-    }).lean();
-
-    const effectiveSection = merge ? merge.hostSection : cleanSection;
-    res.status(200).json({ success: true, effectiveSection, isMerged: !!merge });
+    const merge = await SectionMerge.findOne({ language, stage, guestSection: section, isActive: true }).lean();
+    res.status(200).json({ success: true, effectiveSection: merge ? merge.hostSection : section, isMerged: !!merge });
   } catch (error) {
     console.error("Resolve Section Error:", error);
     res.status(500).json({ message: "Server Error" });

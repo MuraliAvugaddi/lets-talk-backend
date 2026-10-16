@@ -106,3 +106,4 @@ const getNotification = async (req, res) => {
 };
 
 module.exports = { setNotification, deleteNotification, getNotification };
+

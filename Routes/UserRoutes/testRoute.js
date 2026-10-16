@@ -1,23 +1,24 @@
 const express = require("express");
 const router = express.Router();
-
 const {
   updateTest,
   deleteTest,
   getResults,
-  getTest,
+  getTest, 
   submitTest,
   getMyTestResults,
 } = require("../../Controllers/UserContollers/testController");
+const { auth, requireAuth } = require("../../middleware/authMiddleware");
 
-// --- ADMIN ROUTES ---
-router.post("/admin/update-test", updateTest);
-router.delete("/admin/delete-test", deleteTest);
-router.get("/admin/results", getResults);
+const ADMIN = ["manager", "admin"];
+const STAFF = ["teacher", "manager", "admin"];
 
-// --- USER ROUTES ---
-router.get("/user/get-test", getTest);
-router.post("/user/submit-test", submitTest);
-router.get("/user/my-results", getMyTestResults);
+router.post("/admin/update-test", requireAuth(...ADMIN), updateTest);
+router.delete("/admin/delete-test", requireAuth(...ADMIN), deleteTest);
+router.get("/admin/results", auth(...STAFF), getResults);
+
+router.get("/user/get-test", auth(), getTest);
+router.post("/user/submit-test", auth(), submitTest);
+router.get("/user/my-results", auth(), getMyTestResults);
 
 module.exports = router;

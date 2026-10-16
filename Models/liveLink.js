@@ -13,3 +13,4 @@ const liveLinkSchema = new mongoose.Schema({
 liveLinkSchema.index({ language: 1, stage: 1, type: 1 }, { unique: true });
 
 module.exports = mongoose.model("LiveLink", liveLinkSchema);
+

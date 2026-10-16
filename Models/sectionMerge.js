@@ -12,3 +12,4 @@ const sectionMergeSchema = new mongoose.Schema(
 );
 
 module.exports = mongoose.model("SectionMerge", sectionMergeSchema);
+

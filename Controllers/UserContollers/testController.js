@@ -1,30 +1,49 @@
 const Test = require("../../Models/test");
 const Result = require("../../Models/result");
 const User = require("../../Models/users");
+const { normStage, stageVariants, normLanguage, isAll, isValidId, STAFF_ROLES } = require("../../utils/normalize");
 
-// --- 1. ADMIN: CREATE OR UPDATE TEST ---
+const testFilter = (language, stage) => ({ language, stage: { $in: stageVariants(stage) } });
+
+// Students must NEVER receive correctOptionIndex
+const publicQuestions = (questions) =>
+  (questions || []).map((q) => ({ _id: q._id, questionText: q.questionText, options: q.options }));
+
+const withCreatedAt = (r) => ({ ...r, createdAt: r.createdAt || r.completedAt });
+
+// =====================================================
+// ADMIN: create / update / delete test
+// =====================================================
 const updateTest = async (req, res) => {
   try {
-    const { language, stage, isActive, questions, durationMinutes } = req.body;
+    const language = normLanguage(req.body.language);
+    const stage = normStage(req.body.stage);
+    const { isActive, questions, durationMinutes } = req.body;
 
-    if (!language || !stage || !questions) {
+    if (!language || !stage || !Array.isArray(questions) || questions.length === 0) {
       return res.status(400).json({ message: "Missing required test fields" });
     }
 
-    const cleanLang = language.trim();
-    const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
+    for (const [i, q] of questions.entries()) {
+      const ok =
+        q &&
+        String(q.questionText || "").trim() &&
+        Array.isArray(q.options) &&
+        q.options.length >= 2 &&
+        Number.isInteger(q.correctOptionIndex) &&
+        q.correctOptionIndex >= 0 &&
+        q.correctOptionIndex < q.options.length;
+      if (!ok) return res.status(400).json({ message: `Question ${i + 1} is invalid` });
+    }
 
     const test = await Test.findOneAndUpdate(
-      { 
-        language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
-        stage: { $regex: new RegExp(`^${cleanStage}$`, "i") } 
-      },
+      testFilter(language, stage),
       {
-        language: cleanLang,
-        stage: cleanStage,
-        isActive: isActive !== undefined ? isActive : true,
+        language,
+        stage,
+        isActive: isActive !== undefined ? !!isActive : true,
         questions,
-        durationMinutes: durationMinutes || 25,
+        durationMinutes: Math.min(Math.max(Number(durationMinutes) || 25, 5), 180),
       },
       { upsert: true, new: true }
     );
@@ -36,18 +55,13 @@ const updateTest = async (req, res) => {
   }
 };
 
-// --- 2. ADMIN: DELETE ACTIVE TEST ---
 const deleteTest = async (req, res) => {
   try {
-    const { language, stage } = req.body;
-    const cleanLang = language ? language.trim() : "";
-    const cleanStage = stage ? stage.replace(/\s+/g, "").toLowerCase() : "";
+    const language = normLanguage(req.body.language || req.query.language);
+    const stage = normStage(req.body.stage || req.query.stage);
+    if (!language || !stage) return res.status(400).json({ message: "language and stage required" });
 
-    await Test.findOneAndDelete({ 
-      language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
-      stage: { $regex: new RegExp(`^${cleanStage}$`, "i") } 
-    });
-
+    await Test.findOneAndDelete(testFilter(language, stage));
     res.status(200).json({ message: "Test deleted successfully" });
   } catch (error) {
     console.error("Delete Test Error:", error);
@@ -55,64 +69,46 @@ const deleteTest = async (req, res) => {
   }
 };
 
-// --- 3. ADMIN: GET ALL STUDENT RESULTS ---
 const getResults = async (req, res) => {
   try {
-    const { language, stage } = req.query;
-    let query = {};
-    if (language && language !== "all") {
-      query.language = { $regex: new RegExp(`^${language.trim()}$`, "i") };
-    }
-    if (stage && stage !== "all") {
-      const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
-      query.stage = { $regex: new RegExp(`^${cleanStage}$`, "i") };
-    }
+    const query = {};
+    const language = normLanguage(req.query.language);
+    const stage = normStage(req.query.stage);
+    if (!isAll(req.query.language) && language) query.language = language;
+    if (!isAll(req.query.stage) && stage) query.stage = { $in: stageVariants(stage) };
 
-    const results = await Result.find(query).sort({ createdAt: -1 });
-    res.status(200).json(results);
+    const results = await Result.find(query).sort({ completedAt: -1 }).limit(2000).lean();
+    res.status(200).json(results.map(withCreatedAt));
   } catch (error) {
     console.error("Get Admin Results Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-// --- 4. USER: GET TEST QUESTIONS (Case-Insensitive Match) ---
+// =====================================================
+// STUDENT: get test (answers stripped) / submit / my results
+// =====================================================
 const getTest = async (req, res) => {
   try {
-    const { language, stage, userId } = req.query;
+    const language = normLanguage(req.query.language);
+    const stage = normStage(req.query.stage);
+    const userId = req.user ? String(req.user._id) : req.query.userId;
+    if (!language || !stage) return res.status(400).json({ message: "language and stage required" });
 
-    const cleanLang = language ? language.trim() : "";
-    const cleanStage = stage ? stage.replace(/\s+/g, "").toLowerCase() : "";
-
-    if (userId) {
-      const existingResult = await Result.findOne({ 
-        userId, 
-        language: { $regex: new RegExp(`^${cleanLang}$`, "i") },
-        stage: { $regex: new RegExp(`^${cleanStage}$`, "i") }
-      });
-      if (existingResult) {
-        return res.status(200).json({
-          completed: true,
-          score: existingResult.score,
-          total: existingResult.totalQuestions,
-        });
+    if (isValidId(userId)) {
+      const existing = await Result.findOne({ userId, ...testFilter(language, stage) }).lean();
+      if (existing) {
+        return res.status(200).json({ completed: true, score: existing.score, total: existing.totalQuestions });
       }
     }
 
-    const test = await Test.findOne({ 
-      language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
-      stage: { $regex: new RegExp(`^${cleanStage}$`, "i") }, 
-      isActive: true 
-    });
-
-    if (!test) {
-      return res.status(404).json({ message: "No active test found" });
-    }
+    const test = await Test.findOne({ ...testFilter(language, stage), isActive: true }).lean();
+    if (!test) return res.status(404).json({ message: "No active test found" });
 
     res.status(200).json({
       completed: false,
       durationMinutes: test.durationMinutes || 25,
-      questions: test.questions,
+      questions: publicQuestions(test.questions),
     });
   } catch (error) {
     console.error("Get User Test Error:", error);
@@ -120,50 +116,69 @@ const getTest = async (req, res) => {
   }
 };
 
-// --- 5. USER: SUBMIT ANSWERS ---
 const submitTest = async (req, res) => {
   try {
-    const { userId, userName, userPhone, userMode, language, stage, answers } = req.body;
+    const userId = req.user ? String(req.user._id) : req.body.userId;
+    const language = normLanguage(req.body.language);
+    const stage = normStage(req.body.stage);
+    const answers = Array.isArray(req.body.answers) ? req.body.answers : [];
 
-    const cleanLang = language ? language.trim() : "";
-    const cleanStage = stage ? stage.replace(/\s+/g, "").toLowerCase() : "";
-
-    const test = await Test.findOne({ 
-      language: { $regex: new RegExp(`^${cleanLang}$`, "i") }, 
-      stage: { $regex: new RegExp(`^${cleanStage}$`, "i") } 
-    });
-
-    if (!test) {
-      return res.status(404).json({ message: "Test not found" });
+    if (!isValidId(userId) || !language || !stage) {
+      return res.status(400).json({ message: "userId, language and stage required" });
     }
 
-    let calculatedScore = 0;
-    const totalQuestions = test.questions.length;
+    const [user, test, existing] = await Promise.all([
+      User.findById(userId).select("name phone mode").lean(),
+      Test.findOne({ ...testFilter(language, stage), isActive: true }),
+      Result.findOne({ userId, ...testFilter(language, stage) }).lean(),
+    ]);
 
-    answers.forEach((ans) => {
-      const q = test.questions.id(ans.questionId);
-      if (q && q.correctOptionIndex === ans.selectedIndex) {
-        calculatedScore++;
-      }
-    });
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!test) return res.status(404).json({ message: "Test not found" });
+
+    // One attempt per test — second submit returns the first score
+    if (existing) {
+      return res.status(200).json({
+        message: "Test already submitted",
+        alreadySubmitted: true,
+        score: existing.score,
+        total: existing.totalQuestions,
+        result: withCreatedAt(existing),
+      });
+    }
+
+    const seen = new Set();
+    const cleanAnswers = [];
+    let score = 0;
+    for (const ans of answers) {
+      const qid = String(ans && ans.questionId);
+      if (seen.has(qid)) continue; // the same question can't be scored twice
+      seen.add(qid);
+      const q = test.questions.id(qid);
+      const selectedIndex = Number(ans.selectedIndex);
+      cleanAnswers.push({ questionId: qid, selectedIndex });
+      if (q && q.correctOptionIndex === selectedIndex) score++;
+    }
 
     const result = await Result.create({
       userId,
-      userName,
-      userPhone,
-      userMode: userMode || "offline",
-      language: cleanLang,
-      stage: cleanStage,
-      score: calculatedScore,
-      totalQuestions,
-      answers,
+      userName: user.name,
+      userPhone: user.phone,
+      userMode: user.mode || "offline",
+      language,
+      stage,
+      score,
+      totalQuestions: test.questions.length,
+      answers: cleanAnswers,
     });
 
     res.status(200).json({
       message: "Test submitted successfully",
-      score: calculatedScore,
-      total: totalQuestions,
-      result,
+      score,
+      total: test.questions.length,
+      result: withCreatedAt(result.toObject()),
+      // Correct answers are only revealed AFTER the single attempt is saved
+      review: test.questions.map((q) => ({ questionId: String(q._id), correctOptionIndex: q.correctOptionIndex })),
     });
   } catch (error) {
     console.error("Submit Test Error:", error);
@@ -171,36 +186,23 @@ const submitTest = async (req, res) => {
   }
 };
 
-// --- 6. USER: GET PERSONAL TEST RESULTS ---
 const getMyTestResults = async (req, res) => {
   try {
-    const { userId, language } = req.query;
-    if (!userId) {
-      return res.status(400).json({ message: "User ID is required" });
-    }
+    // Students see only their own results; staff (admin panel) may pass ?userId= to view a student
+    const isStaffUser = req.user && STAFF_ROLES.includes(req.user.role);
+    const userId = req.user && !(isStaffUser && req.query.userId) ? String(req.user._id) : req.query.userId;
+    if (!isValidId(userId)) return res.status(400).json({ message: "User ID is required" });
 
-    let query = { userId };
-    if (language && language.toLowerCase() !== "all") {
-      query.language = { $regex: new RegExp(`^${language.trim()}$`, "i") };
-    }
+    const query = { userId };
+    const language = normLanguage(req.query.language);
+    if (!isAll(req.query.language) && language) query.language = language;
 
-    const results = await Result.find(query).sort({ createdAt: -1 });
-
-    res.status(200).json({
-      total: results.length,
-      results,
-    });
+    const results = await Result.find(query).sort({ completedAt: -1 }).lean();
+    res.status(200).json({ total: results.length, results: results.map(withCreatedAt) });
   } catch (error) {
     console.error("Get My Test Results Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-module.exports = {
-  updateTest,
-  deleteTest,
-  getResults,
-  getTest,
-  submitTest,
-  getMyTestResults,
-};
+module.exports = { updateTest, deleteTest, getResults, getTest, submitTest, getMyTestResults };

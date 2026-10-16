@@ -21,3 +21,4 @@ const uploadBufferToCloudinary = (buffer) => {
 };
 
 module.exports = { uploadBufferToCloudinary };
+

@@ -1,18 +1,29 @@
 const Feedback = require("../../Models/feedback");
+const User = require("../../Models/users");
+const { normalizeDateKey, istDayRange } = require("../../utils/time");
+const { normMode, isAll, isValidId } = require("../../utils/normalize");
 
-// @desc    Submit student feedback (User side)
-// @route   POST /api/user/feedback
+// POST /api/user/feedback  { userId, rating, comment, (name, phone, mode) }
 const submitFeedback = async (req, res) => {
   try {
-    const { userId, name, phone, mode, rating, comment } = req.body;
-    if (!rating || !comment) {
-      return res.status(400).json({ message: "Rating and comment are required." });
+    const userId = req.user ? String(req.user._id) : req.body.userId;
+    const rating = Number(req.body.rating);
+    const comment = String(req.body.comment || "").trim().slice(0, 2000);
+
+    if (!isValidId(userId)) return res.status(400).json({ message: "Valid userId required" });
+    if (!rating || rating < 1 || rating > 5 || !comment) {
+      return res.status(400).json({ message: "Rating (1-5) and comment are required." });
     }
+
+    // Name/phone/mode come from the account, not from the request
+    const user = await User.findById(userId).select("name phone mode").lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+
     const newFeedback = await Feedback.create({
       userId,
-      name,
-      phone,
-      mode: mode ? mode.toLowerCase() : "online",
+      name: user.name,
+      phone: user.phone,
+      mode: user.mode || normMode(req.body.mode) || "online",
       rating,
       comment,
     });
@@ -23,34 +34,22 @@ const submitFeedback = async (req, res) => {
   }
 };
 
-// @desc    Get all student feedback with Date & Mode Filters (Admin side)
-// @route   GET /api/admin/feedbacks
+// GET /api/admin/feedbacks?date=yyyy-MM-dd|all&mode=online|offline|all
 const getAllFeedbacks = async (req, res) => {
   try {
-    const { date, mode } = req.query;
-    let query = {};
+    const query = {};
+    const mode = normMode(req.query.mode);
+    if (mode) query.mode = mode;
 
-    // Mode Filter
-    if (mode && mode.toLowerCase() !== "all") {
-      query.mode = mode.toLowerCase();
+    if (!isAll(req.query.date)) {
+      const key = normalizeDateKey(req.query.date);
+      if (key) {
+        const { start, end } = istDayRange(key); // India day, not UTC day
+        query.createdAt = { $gte: start, $lte: end };
+      }
     }
 
-    // Date Filter (Specific Day Query: Start of day to End of day)
-    if (date && date.toLowerCase() !== "all") {
-      const selected = new Date(date);
-      const startOfDay = new Date(selected.setUTCHours(0, 0, 0, 0));
-      const endOfDay = new Date(selected.setUTCHours(23, 59, 59, 999));
-
-      query.createdAt = {
-        $gte: startOfDay,
-        $lte: endOfDay,
-      };
-    }
-
-    const feedbacks = await Feedback.find(query)
-      .sort({ createdAt: -1 })
-      .populate("userId", "name phone mode");
-
+    const feedbacks = await Feedback.find(query).sort({ createdAt: -1 }).limit(500).lean();
     res.status(200).json({ feedbacks });
   } catch (error) {
     console.error("Get Feedbacks Error:", error);
@@ -58,14 +57,11 @@ const getAllFeedbacks = async (req, res) => {
   }
 };
 
-// @desc    Delete feedback item (Admin side)
-// @route   DELETE /api/admin/feedbacks/:id
 const deleteFeedback = async (req, res) => {
   try {
+    if (!isValidId(req.params.id)) return res.status(400).json({ message: "Invalid id" });
     const feedback = await Feedback.findByIdAndDelete(req.params.id);
-    if (!feedback) {
-      return res.status(404).json({ message: "Feedback not found" });
-    }
+    if (!feedback) return res.status(404).json({ message: "Feedback not found" });
     res.status(200).json({ message: "Feedback removed successfully" });
   } catch (error) {
     console.error("Delete Feedback Error:", error);

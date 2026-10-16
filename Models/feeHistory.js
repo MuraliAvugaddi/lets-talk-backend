@@ -12,3 +12,4 @@ const feeHistorySchema = new mongoose.Schema(
 );
 
 module.exports = mongoose.model("FeeHistory", feeHistorySchema);
+

@@ -1,191 +1,280 @@
 const Attendance = require("../../Models/attendance");
 const User = require("../../Models/users");
 const SectionMerge = require("../../Models/sectionMerge");
+const {
+  dateKey,
+  istMinutesOfDay,
+  normalizeDateKey,
+  legacyDateVariants,
+  istDayRange,
+  parseClockToMinutes,
+} = require("../../utils/time");
+const {
+  normStage,
+  stageNumber,
+  stageVariants,
+  normLanguage,
+  normMode,
+  normSection,
+  isAll,
+  isValidId,
+  STAFF_ROLES,
+} = require("../../utils/normalize");
+const { normBatch, stageBatch, enabledStageTimings, inBatchWindow, batchAt } = require("../../utils/batches");
+const BatchVisit = require("../../Models/batchVisit");
+const { practiceIndex } = require("./practiceController");
+const Practice = require("../../Models/practice");
 
-const getFormattedDate = (d = new Date()) => {
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  return `${day}-${month}-${year}`;
+// =====================================================
+// CONFIG (override on Render → Environment)
+// =====================================================
+const MAX_CLASS_MINUTES = 90;
+const PRESENT_MINUTES = 45;
+const PARTIAL_MINUTES = 15;
+const DEFAULT_BATCH = "05:30 AM - 07:00 AM";
+
+const INSTITUTE_LAT = Number(process.env.INSTITUTE_LAT || 17.729417);
+const INSTITUTE_LNG = Number(process.env.INSTITUTE_LNG || 83.312231);
+// Phone GPS drifts 20-50 m indoors; the app checks 40 m, server allows a little more
+const GEOFENCE_RADIUS_M = Number(process.env.GEOFENCE_RADIUS_M || 100);
+
+// Trainer shift start times (IST). Present = within ±5 min of one of these.
+const TEACHER_START_MINUTES = (process.env.TEACHER_START_TIMES || "05:30,15:30")
+  .split(",")
+  .map((t) => parseClockToMinutes(t.trim()))
+  .filter((m) => m !== null);
+
+// =====================================================
+// HELPERS
+// =====================================================
+const isStaff = (user) => !!user && STAFF_ROLES.includes(user.role);
+
+// With a token we trust ONLY the token. Without one (transition mode) we fall back to the body.
+const actingUserId = (req) => (req.user ? String(req.user._id) : req.body.userId || req.query.userId);
+
+const evaluateTeacherStatus = (when) => {
+  const mins = istMinutesOfDay(when);
+  return TEACHER_START_MINUTES.some((start) => Math.abs(mins - start) <= 5) ? "Present" : "Late";
 };
 
-const parseTimeToMinutes = (timeStr) => {
-  const [hours, minutes] = timeStr.split(":").map(Number);
-  return hours * 60 + minutes;
-};
-
-const evaluateTeacherStatus = (joinDate) => {
-  if (!joinDate) return "Absent";
-  const d = new Date(joinDate);
-  const currentMins = d.getHours() * 60 + d.getMinutes();
-
-  const morningStart = parseTimeToMinutes("05:25");
-  const morningEnd = parseTimeToMinutes("05:35");
-  const eveningStart = parseTimeToMinutes("15:25"); 
-  const eveningEnd = parseTimeToMinutes("15:35");   
-
-  if ((currentMins >= morningStart && currentMins <= morningEnd) ||
-      (currentMins >= eveningStart && currentMins <= eveningEnd)) {
-    return "Present";
-  }
-  return "Late"; 
-};
-
-const evaluateStudentBatchStatus = (joinDate, batchTimeStr = "05:30 AM - 07:00 AM") => {
-  if (!joinDate) return "Absent";
-  const join = new Date(joinDate);
-  const joinMins = join.getHours() * 60 + join.getMinutes();
-
-  const startTimePart = batchTimeStr.split("-")[0].trim(); 
-  const parts = startTimePart.split(" ");
-  let [hours, minutes] = parts[0].split(":").map(Number);
-  const modifier = parts[1]; 
-
-  if (modifier === "PM" && hours < 12) hours += 12;
-  if (modifier === "AM" && hours === 12) hours = 0;
-
-  const batchStartMins = hours * 60 + minutes;
-  const diffMinutes = joinMins - batchStartMins;
-
-  if (diffMinutes >= 0 && diffMinutes <= 5) {
-    return "Present";
-  } else if (diffMinutes > 5) {
-    return "Late";
-  } else if (diffMinutes < 0 && diffMinutes >= -30) {
-    return "Present"; 
-  }
+const evaluateStudentBatchStatus = (when, batchTimeStr) => {
+  const start = parseClockToMinutes(batchTimeStr) ?? parseClockToMinutes(DEFAULT_BATCH);
+  const diff = istMinutesOfDay(when) - start;
+  if (diff >= -30 && diff <= 5) return "Present";
   return "Late";
 };
 
-const ensureDailyAttendanceRecords = async (targetDateStr, roleType = "teacher") => {
-  try {
-    const queryRole = roleType === "teacher" 
-      ? { role: { $in: ["teacher", "manager", "admin"] } } 
-      : { role: "student" };
-      
-    const users = await User.find(queryRole).select("_id name phone mode language teacherStage createdAt").lean();
+// Which batch a check-in belongs to: what the app sent, else the student's timing for THIS stage
+const resolveBatch = (user, sentBatch, language, stage) =>
+  normBatch(sentBatch) || (user && user.role === "student" ? stageBatch(user, language, stage) || null : null);
 
-    const parts = targetDateStr.split("-");
-    if (parts.length !== 3) return;
-    const targetDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-    targetDate.setHours(0, 0, 0, 0);
+const evaluateArrival = (user, when, batchTime) =>
+  isStaff(user) ? evaluateTeacherStatus(when) : evaluateStudentBatchStatus(when, batchTime);
 
-    const bulkOps = [];
-
-    for (const user of users) {
-      const userCreatedAt = new Date(user.createdAt || user._id.getTimestamp());
-      userCreatedAt.setHours(0, 0, 0, 0);
-
-      if (userCreatedAt > targetDate) {
-        continue;
-      }
-
-      const stageVal = user.teacherStage || "Stage 1";
-
-      bulkOps.push({
-        updateOne: {
-          filter: { userId: user._id, date: targetDateStr, stage: stageVal },
-          update: {
-            $setOnInsert: {
-              userId: user._id,
-              userName: user.name,
-              userPhone: user.phone,
-              userMode: user.mode || "offline",
-              language: user.language || "English",
-              stage: stageVal,
-              date: targetDateStr,
-              status: "Absent",
-              totalMinutesSpent: 0,
-            }
-          },
-          upsert: true
-        }
-      });
-    }
-
-    if (bulkOps.length > 0) {
-      await Attendance.bulkWrite(bulkOps, { ordered: false });
-    }
-  } catch (e) {
-    console.error("Error ensuring daily attendance records:", e);
-  }
+// Same rule the trainer roster always used, now stored so every screen agrees
+const deriveOnlineStatus = (minutes, arrivalStatus) => {
+  if (minutes >= PRESENT_MINUTES) return "Present";
+  if (minutes >= PARTIAL_MINUTES) return "Partial";
+  return arrivalStatus && arrivalStatus !== "Absent" ? arrivalStatus : "Absent";
 };
 
+// Closes the open segment [joinTime → now] and adds it to the counters.
+// joinTime is then moved forward, so a segment is NEVER counted twice.
+const closeSegment = (record, now) => {
+  if (!record.joinTime) return;
+  const seconds = Math.max(0, Math.floor((now - new Date(record.joinTime)) / 1000));
+  const total = Math.min((record.secondsSpent || (record.totalMinutesSpent || 0) * 60) + seconds, MAX_CLASS_MINUTES * 60);
+  record.secondsSpent = total;
+  record.totalMinutesSpent = Math.floor(total / 60);
+  record.lastActiveTime = now;
+};
+
+const haversineMeters = (lat1, lng1, lat2, lng2) => {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+};
+
+const statusRank = { Present: 3, Late: 2, Partial: 1, Absent: 0 };
+
+// Old data can contain duplicates (same user, same day, different date spelling).
+// Keep the best one: higher status first, then more minutes.
+const pickBest = (a, b) => {
+  if (!a) return b;
+  const ra = statusRank[a.status] || 0;
+  const rb = statusRank[b.status] || 0;
+  if (rb !== ra) return rb > ra ? b : a;
+  return (b.totalMinutesSpent || 0) > (a.totalMinutesSpent || 0) ? b : a;
+};
+
+const liveMinutes = (record, now = new Date()) => {
+  let secs = record.secondsSpent || (record.totalMinutesSpent || 0) * 60;
+  if (record.joinTime) secs += Math.max(0, (now - new Date(record.joinTime)) / 1000);
+  return Math.min(Math.floor(secs / 60), MAX_CLASS_MINUTES);
+};
+
+// =====================================================
+// OFFLINE: GPS CHECK-IN (students + trainers)
+// POST /api/user/mark-attendance  { userId, stage, lat, lng, language, batchTime }
+// =====================================================
 const markAttendance = async (req, res) => {
   try {
-    const { userId, stage, lat, lng, language, batchTime } = req.body;
-    const user = await User.findById(userId);
+    const userId = actingUserId(req);
+    if (!isValidId(userId)) return res.status(400).json({ message: "Valid userId required" });
+
+    const lat = Number(req.body.lat);
+    const lng = Number(req.body.lng);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ message: "Location is required for check-in" });
+    }
+    const distance = haversineMeters(lat, lng, INSTITUTE_LAT, INSTITUTE_LNG);
+    if (distance > GEOFENCE_RADIUS_M) {
+      return res.status(403).json({ message: `You are ${Math.round(distance)}m away from the institute.` });
+    }
+
+    const user = await User.findById(userId).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const now = new Date();
-    const dateStr = getFormattedDate(now);
-    const targetStage = stage || user.teacherStage || "Stage 1";
+    const date = dateKey(now);
+    const stage = normStage(req.body.stage) || normStage(user.teacherStage) || "stage1";
+    const language = normLanguage(req.body.language) || user.language || "English";
 
-    let status = "Present";
-    if (user.role === "teacher" || user.role === "manager" || user.role === "admin") {
-      status = evaluateTeacherStatus(now);
-    } else {
-      status = evaluateStudentBatchStatus(now, batchTime);
+    const existing = await Attendance.findOne({
+      userId,
+      date: { $in: legacyDateVariants(date) },
+      stage: { $in: stageVariants(stage) },
+      language,
+      markedAt: { $exists: true, $ne: null },
+    }).lean();
+
+    if (existing) {
+      return res.status(200).json({ message: `Already marked as ${existing.status}`, record: existing });
     }
 
+    const batchTime = resolveBatch(user, req.body.batchTime, language, stage) || DEFAULT_BATCH;
+    const status = evaluateArrival(user, now, batchTime);
+
     const record = await Attendance.findOneAndUpdate(
-      { userId, stage: targetStage, date: dateStr },
+      { userId, stage, date, language },
       {
-        userName: user.name,
-        userPhone: user.phone,
-        userMode: user.mode || "offline",
-        language: language || user.language || "English",
-        batchTime: batchTime || "05:30 AM - 07:00 AM",
-        status: status,
-        markedAt: now,
-        location: { lat, lng },
+        $set: {
+          userName: user.name,
+          userPhone: user.phone,
+          userMode: user.mode || "offline",
+          batchTime,
+          status,
+          arrivalStatus: status,
+          markedAt: now,
+          location: { lat, lng },
+        },
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+
     res.status(200).json({ message: `Marked as ${status}`, record });
   } catch (error) {
+    if (error && error.code === 11000) {
+      return res.status(200).json({ message: "Attendance already recorded for this class today" });
+    }
     console.error("Mark Attendance Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
+// =====================================================
+// ONLINE: JOIN / SYNC / LEAVE
+// All times come from the SERVER clock (client times are ignored → no spoofing).
+// =====================================================
 const joinOnlineClass = async (req, res) => {
   try {
-    const { userId, language, stage, joinTime, batchStartTime } = req.body;
-    const user = await User.findById(userId);
+    const userId = actingUserId(req);
+    if (!isValidId(userId)) return res.status(400).json({ message: "Valid userId required" });
+
+    const user = await User.findById(userId).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const now = joinTime ? new Date(joinTime) : new Date();
-    const dateStr = getFormattedDate(now);
-    const userStage = stage || user.teacherStage || "Stage 1";
-    
-    let evaluatedStatus = "Present";
-    if (user.role === "teacher" || user.role === "manager" || user.role === "admin") {
-      evaluatedStatus = evaluateTeacherStatus(now);
-    } else {
-      evaluatedStatus = evaluateStudentBatchStatus(now, batchStartTime || "05:30 AM - 07:00 AM");
+    const now = new Date();
+    const date = dateKey(now);
+    const stage = normStage(req.body.stage) || normStage(user.teacherStage) || "stage1";
+    const language = normLanguage(req.body.language) || user.language || "English";
+    const batchTime = resolveBatch(user, req.body.batchStartTime || req.body.batchTime, language, stage);
+
+    // 🚫 Student joined outside their own batch time → let them listen, but
+    // do NOT mark attendance. Saved as an "other batch" join for admin/trainer.
+    if (user.role === "student" && process.env.ENFORCE_BATCH_WINDOW !== "false") {
+      const own = stageBatch(user, language, stage);
+      const mins = istMinutesOfDay(now);
+      if (own && !inBatchWindow(own, mins)) {
+        const running = batchAt(mins);
+        const joinedBatch = running ? running.label : "Outside class hours";
+        await BatchVisit.findOneAndUpdate(
+          { userId, date, language, stage, joinedBatch },
+          {
+            $set: {
+              userName: user.name,
+              userPhone: user.phone,
+              section: language === "Hindi" ? "" : String(user.onlineSection || "").toUpperCase(),
+              ownBatch: own,
+              lastJoinedAt: now,
+            },
+            $setOnInsert: { joinedAt: now },
+            $inc: { joinCount: 1 },
+          },
+          { upsert: true, setDefaultsOnInsert: true }
+        );
+        if (req.io) req.io.to("admin_room").emit("attendance_update", { type: "batch_visit", userId });
+        return res.status(200).json({
+          outsideBatch: true,
+          attendanceId: null,
+          ownBatch: own,
+          joinedBatch,
+          message: `Your class time is ${own}. Joining now does not count for attendance.`,
+        });
+      }
     }
 
-    let record = await Attendance.findOne({ userId, stage: userStage, date: dateStr });
+    let record = await Attendance.findOne({
+      userId,
+      date: { $in: legacyDateVariants(date) },
+      stage: { $in: stageVariants(stage) },
+      language,
+    });
 
     if (record) {
+      // Re-joining while a segment is still open (app was killed): close it first
+      closeSegment(record, now);
       record.joinTime = now;
       record.lastActiveTime = now;
-      if (record.status === "Absent") record.status = evaluatedStatus;
+      record.userMode = "online";
+      if (!record.firstJoinAt) record.firstJoinAt = now;
+      if (!record.arrivalStatus || record.arrivalStatus === "Absent") {
+        record.arrivalStatus = evaluateArrival(user, now, batchTime);
+      }
+      record.status = deriveOnlineStatus(record.totalMinutesSpent || 0, record.arrivalStatus);
       await record.save();
     } else {
+      const arrival = evaluateArrival(user, now, batchTime);
       record = await Attendance.create({
         userId,
         userName: user.name,
         userPhone: user.phone,
         userMode: "online",
-        language: language || user.language || "English",
-        stage: userStage,
-        date: dateStr,
+        language,
+        stage,
+        date,
+        batchTime: batchTime || "Live Stream",
+        firstJoinAt: now,
         joinTime: now,
         lastActiveTime: now,
-        totalMinutesSpent: user.role === 'teacher' || user.role === 'admin' ? 60 : 0,
-        status: evaluatedStatus,
+        secondsSpent: 0,
+        totalMinutesSpent: 0,
+        arrivalStatus: arrival,
+        status: deriveOnlineStatus(0, arrival),
       });
     }
 
@@ -201,21 +290,36 @@ const joinOnlineClass = async (req, res) => {
   }
 };
 
+const loadOwnRecord = async (req, res) => {
+  const { attendanceId } = req.body;
+  if (!isValidId(attendanceId)) {
+    res.status(400).json({ message: "Attendance ID required" });
+    return null;
+  }
+  const record = await Attendance.findById(attendanceId);
+  if (!record) {
+    res.status(404).json({ message: "Record not found" });
+    return null;
+  }
+  if (req.user && !isStaff(req.user) && String(record.userId) !== String(req.user._id)) {
+    res.status(403).json({ message: "Forbidden" });
+    return null;
+  }
+  return record;
+};
+
 const syncOnlineClass = async (req, res) => {
   try {
-    const { attendanceId, returnTime } = req.body;
-    if (!attendanceId) return res.status(400).json({ message: "Attendance ID required" });
+    const record = await loadOwnRecord(req, res);
+    if (!record) return;
 
-    const record = await Attendance.findById(attendanceId);
-    if (!record) return res.status(404).json({ message: "Record not found" });
-
-    const start = new Date(record.joinTime || record.createdAt);
-    const end = returnTime ? new Date(returnTime) : new Date();
-    const elapsedMinutes = Math.max(0, Math.round((end - start) / 60000));
-
-    record.totalMinutesSpent = Math.min((record.totalMinutesSpent || 0) + elapsedMinutes, 90);
-    record.lastActiveTime = end;
-    await record.save();
+    const now = new Date();
+    if (record.joinTime) {
+      closeSegment(record, now);
+      record.joinTime = now; // keep the session open from this checkpoint
+      record.status = deriveOnlineStatus(record.totalMinutesSpent, record.arrivalStatus || record.status);
+      await record.save();
+    }
 
     res.status(200).json({ minutesSpent: record.totalMinutesSpent, status: record.status });
   } catch (error) {
@@ -226,21 +330,17 @@ const syncOnlineClass = async (req, res) => {
 
 const leaveOnlineClass = async (req, res) => {
   try {
-    const { attendanceId, leaveTime } = req.body;
-    if (!attendanceId) return res.status(400).json({ message: "Attendance ID required" });
+    const record = await loadOwnRecord(req, res);
+    if (!record) return;
 
-    const record = await Attendance.findById(attendanceId);
-    if (!record) return res.status(404).json({ message: "Record not found" });
-
+    const now = new Date();
     if (record.joinTime) {
-      const start = new Date(record.joinTime);
-      const end = leaveTime ? new Date(leaveTime) : new Date();
-      const sessionMinutes = Math.max(0, Math.round((end - start) / 60000));
-      record.totalMinutesSpent = Math.min((record.totalMinutesSpent || 0) + sessionMinutes, 90);
-      record.lastActiveTime = end;
+      closeSegment(record, now);
       record.joinTime = null;
+      record.leaveTime = now;
+      record.status = deriveOnlineStatus(record.totalMinutesSpent, record.arrivalStatus || record.status);
+      await record.save();
     }
-    await record.save();
 
     res.status(200).json({ message: "Session ended", minutesSpent: record.totalMinutesSpent });
   } catch (error) {
@@ -249,82 +349,137 @@ const leaveOnlineClass = async (req, res) => {
   }
 };
 
+// =====================================================
+// ADMIN: ATTENDANCE SHEET
+// GET /api/admin/attendance?date=&stage=&language=&mode=&batchTime=&role=student|teacher|all
+//
+// No more writes on read: students without a record are returned as
+// "Absent" rows built in memory (nothing is inserted into the database).
+// =====================================================
 const getAttendanceSheet = async (req, res) => {
   try {
-    const { date, stage, language, mode, batchTime } = req.query;
-    const targetRole = "student";
+    const date = normalizeDateKey(req.query.date) || dateKey();
+    const stage = isAll(req.query.stage) ? null : normStage(req.query.stage);
+    const language = isAll(req.query.language) ? null : normLanguage(req.query.language);
+    const mode = isAll(req.query.mode) ? null : normMode(req.query.mode);
+    // Batch filter = the student's chosen timing (works for online "Live Stream" records too)
+    const batchTime = isAll(req.query.batchTime) ? null : normBatch(req.query.batchTime);
+    if (!isAll(req.query.batchTime) && !batchTime) return res.status(200).json([]);
+    const roleParam = String(req.query.role || "all").toLowerCase();
 
-    if (date) {
-      await ensureDailyAttendanceRecords(date, targetRole);
+    const roles =
+      roleParam === "student" ? ["student"] : roleParam === "teacher" ? STAFF_ROLES : ["student", ...STAFF_ROLES];
+
+    // An unknown language like "Club" simply returns nothing (same as before)
+    if (!isAll(req.query.language) && !language) return res.status(200).json([]);
+
+    const recordQuery = { date: { $in: legacyDateVariants(date) } };
+    if (stage) recordQuery.stage = { $in: stageVariants(stage) };
+    if (language) recordQuery.language = language;
+    if (mode) recordQuery.userMode = mode;
+
+    const records = await Attendance.find(recordQuery).lean();
+
+    const userIds = [...new Set(records.map((r) => String(r.userId)))];
+    const users = await User.find({ _id: { $in: userIds }, role: { $in: roles } })
+      .select("name phone mode role batchTime englishBatch hindiBatch")
+      .lean();
+    const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+    // The timing this student attends for the record's stage (each stage can have its own)
+    const timingFor = (r, u) =>
+      u.role === "student" ? stageBatch(u, r.language, normStage(r.stage)) || normBatch(r.batchTime) || "" : "";
+    const inBatch = (r, u) => !batchTime || timingFor(r, u) === batchTime || normBatch(r.batchTime) === batchTime;
+
+    // One row per user+stage+language (removes legacy duplicates)
+    const best = new Map();
+    for (const r of records) {
+      const u = userMap.get(String(r.userId));
+      if (!u || !inBatch(r, u)) continue;
+      const key = `${r.userId}|${normStage(r.stage)}|${r.language}`;
+      best.set(
+        key,
+        pickBest(best.get(key), {
+          ...r,
+          userName: u.name,
+          userPhone: u.phone,
+          stage: normStage(r.stage),
+          studentBatch: timingFor(r, u), // the timing the student attends for this stage
+        })
+      );
     }
 
-    let attendanceQuery = {};
-    if (date) {
-      const parts = date.split("-");
-      if (parts.length === 3) {
-        const d = parseInt(parts[0], 10);
-        const m = parseInt(parts[1], 10);
-        const y = parts[2];
-        
-        const possibleFormats = [
-          `${d}-${m}-${y}`,
-          `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`,
-          `${String(d).padStart(2, '0')}-${m}-${y}`,
-          `${d}-${String(m).padStart(2, '0')}-${y}`
-        ];
-
-        attendanceQuery.date = { $in: possibleFormats };
-      } else {
-        attendanceQuery.date = date;
+    const now = new Date();
+    const results = [...best.values()].map((r) => {
+      if (r.userMode === "online" && r.joinTime) {
+        const mins = liveMinutes(r, now);
+        return { ...r, totalMinutesSpent: mins, status: deriveOnlineStatus(mins, r.arrivalStatus || r.status) };
       }
-    }
+      return r;
+    });
 
-    if (stage && stage !== "all") {
-      const cleanStage = stage.replace(/\s+/g, "").toLowerCase();
-      attendanceQuery.stage = { $regex: new RegExp(`^${cleanStage}$`, "i") };
-    }
-    if (language && language !== "all") {
-      attendanceQuery.language = { $regex: new RegExp(`^${language}$`, "i") };
-    }
-    if (mode && mode !== "all") {
-      attendanceQuery.userMode = { $regex: new RegExp(`^${mode}$`, "i") };
-    }
-    if (batchTime && batchTime !== "all") {
-      attendanceQuery.batchTime = batchTime;
-    }
+    // Students with no record → in-memory "Absent" rows
+    if (roles.includes("student")) {
+      const attended = new Set(results.map((r) => String(r.userId)));
+      const { end } = istDayRange(date);
 
-    const attendances = await Attendance.find(attendanceQuery).lean();
-    const userIds = [...new Set(attendances.map(att => att.userId))];
-    const users = await User.find({ _id: { $in: userIds }, role: "student" }).select("name phone createdAt mode").lean();
-    const userMap = new Map(users.map(u => [u._id.toString(), u]));
+      const studentQuery = { role: "student", createdAt: { $lte: end } };
+      if (mode) studentQuery.mode = mode;
 
-    let targetDate = null;
-    if (date) {
-      const parts = date.split("-");
-      if (parts.length === 3) {
-        targetDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-        targetDate.setHours(0, 0, 0, 0);
-      }
-    }
+      const accessFields = language ? [language === "Hindi" ? "hindiAccess" : "englishAccess"] : ["englishAccess", "hindiAccess"];
+      const stageKeys = stage ? [stage] : ["stage1", "stage2", "stage3", "stage4", "stage5", "stage6", "stage7"];
+      studentQuery.$or = accessFields.flatMap((f) => stageKeys.map((s) => ({ [`${f}.${s}`]: true })));
 
-    const results = [];
-    for (const att of attendances) {
-      const user = userMap.get(att.userId.toString());
-      if (user) {
-        if (targetDate) {
-          const userCreatedAt = new Date(user.createdAt || att.userId.getTimestamp());
-          userCreatedAt.setHours(0, 0, 0, 0);
-          if (userCreatedAt > targetDate) {
-            continue; 
-          }
-        }
+      const students = await User.find(studentQuery)
+        .select("name phone mode batchTime englishBatch hindiBatch englishAccess hindiAccess")
+        .lean();
 
+      for (const s of students) {
+        if (attended.has(String(s._id))) continue;
+
+        // Which of this student's enabled stages match the filters → their timing
+        const matching = enabledStageTimings(s).filter(
+          (t) => (!language || t.language === language) && (!stage || t.stage === stage)
+        );
+        const hit = batchTime ? matching.find((t) => t.batch === batchTime) : matching[0];
+        if (!hit) continue;
+
+        const lang = hit.language;
         results.push({
-          ...att,
-          userName: user.name,
-          userPhone: user.phone,
+          _id: `absent-${s._id}`,
+          synthetic: true,
+          userId: s._id,
+          userName: s.name,
+          userPhone: s.phone,
+          userMode: s.mode,
+          language: lang,
+          stage: stage || "all",
+          date,
+          batchTime: hit.batch || "N/A",
+          studentBatch: hit.batch || "",
+          status: "Absent",
+          totalMinutesSpent: 0,
         });
       }
+    }
+
+    // 🚫 Joined a different batch today (not counted as attendance)
+    const visitQuery = { date };
+    if (language) visitQuery.language = language;
+    if (stage) visitQuery.stage = stage;
+    const visits = await BatchVisit.find(visitQuery).select("userId joinedBatch").lean();
+    const visitByUser = new Map(visits.map((v) => [String(v.userId), v.joinedBatch]));
+    for (const r of results) r.otherBatchJoin = visitByUser.get(String(r.userId)) || "";
+
+    // 🎤 Speaking practice done in the live class today (marked by the trainer)
+    const practice = await practiceIndex({ date, language, stage });
+    for (const r of results) {
+      const p =
+        practice.get(`${r.userId}|${normStage(r.stage)}|${r.language}`) ||
+        (r.synthetic ? practice.get(String(r.userId)) : null);
+      r.practiced = !!p;
+      r.practicedAt = p ? p.practicedAt : null;
+      r.practiceTrainer = p ? p.trainerName || "" : "";
     }
 
     res.status(200).json(results);
@@ -334,149 +489,109 @@ const getAttendanceSheet = async (req, res) => {
   }
 };
 
+// =====================================================
+// OTHER-BATCH JOINS (admin + trainer)
+// GET /api/admin/batch-visitors?date=&language=&stage=
+// =====================================================
+const getBatchVisitors = async (req, res) => {
+  try {
+    const date = normalizeDateKey(req.query.date) || dateKey();
+    const query = { date };
+    if (!isAll(req.query.language)) {
+      const language = normLanguage(req.query.language);
+      if (!language) return res.status(200).json({ date, total: 0, visitors: [] });
+      query.language = language;
+    }
+    if (!isAll(req.query.stage)) {
+      const stage = normStage(req.query.stage);
+      if (stage) query.stage = stage;
+    }
+    const visitors = await BatchVisit.find(query).sort({ lastJoinedAt: -1 }).lean();
+    res.status(200).json({ date, total: visitors.length, visitors });
+  } catch (error) {
+    console.error("Batch Visitors Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 const getAllStudentsFiltered = async (req, res) => {
   try {
-    const students = await User.find({ role: "student" }).select("-password").lean();
+    const students = await User.find({ role: "student" }).select("-password -sessionToken").lean();
     res.status(200).json({ total: students.length, students });
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-const getAllTeachersFiltered = async (req, res) => {
-  try {
-    const { mode, language, stage } = req.query;
-    let query = { role: { $in: ["teacher", "manager", "admin"] } };
-
-    if (mode && mode.toLowerCase() !== "all") {
-      query.mode = mode.toLowerCase();
-    }
-    if (language && language.toLowerCase() !== "all") {
-      query.language = language.charAt(0).toUpperCase() + language.slice(1).toLowerCase();
-    }
-    if (stage && stage.toLowerCase() !== "all") {
-      const cleanStage = stage.replace(/\s+/g, "").toLowerCase(); 
-      const spacedStage = stage.toLowerCase();                            
-      query.$or = [
-        { teacherStage: { $regex: new RegExp(`^${spacedStage}$`, "i") } },
-        { teacherStage: { $regex: new RegExp(`^${cleanStage}$`, "i") } }
-      ];
-    }
-
-    const teachers = await User.find(query).select("-password").lean();
-    res.status(200).json({
-      success: true,
-      total: teachers.length,
-      teachers: teachers,
-    });
-  } catch (error) {
-    console.error("Get Teachers Error:", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-};
-
-// 🚀 FIXED: Allows offline students with explicit Hindi stage access to appear on online Hindi trainer rosters
+// =====================================================
+// TRAINER: CLASSROOM ROSTER
+// GET /api/admin/trainer-roster?stage=&language=&section=&date=&mode=
+// =====================================================
 const getTrainerClassroomRoster = async (req, res) => {
   try {
-    const { stage, language, section, date, mode } = req.query;
-    let studentQuery = { role: "student" };
-    
-    const isHindi = language && language.toLowerCase() === "hindi";
+    const stage = normStage(req.query.stage) || "stage1";
+    const language = normLanguage(req.query.language) || "English";
+    const isHindi = language === "Hindi";
+    const mode = isAll(req.query.mode) ? null : normMode(req.query.mode);
+    const date = normalizeDateKey(req.query.date) || dateKey();
 
-    if (mode && mode.toLowerCase() !== "all" && !isHindi) {
-      studentQuery.mode = { $regex: new RegExp(`^${mode}$`, "i") };
+    const studentQuery = { role: "student" };
+    studentQuery[`${isHindi ? "hindiAccess" : "englishAccess"}.${stage}`] = true;
+
+    // Hindi classes are not split by mode or section (same behaviour as before)
+    if (mode && !isHindi) studentQuery.mode = mode;
+
+    const rawSection = String(req.query.section || "").trim();
+    if (!isHindi && rawSection && !["none", "all"].includes(rawSection.toLowerCase())) {
+      const host = normSection(rawSection);
+      const merges = await SectionMerge.find({ language, stage, hostSection: host, isActive: true }).lean();
+      studentQuery.onlineSection = { $in: [host, ...merges.map((m) => String(m.guestSection).toUpperCase())] };
     }
 
-    let allowedSections = [];
-    if (!isHindi && section && section.toLowerCase() !== "none" && section.toLowerCase() !== "all") {
-      const cleanSec = section.trim().toUpperCase();
-      allowedSections.push(cleanSec);
+    const batch = isAll(req.query.batchTime) ? null : normBatch(req.query.batchTime);
 
-      let rawStage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
-      const activeMerges = await SectionMerge.find({
-        language: { $regex: new RegExp(`^${language || 'English'}$`, "i") },
-        stage: rawStage,
-        hostSection: cleanSec,
-        isActive: true,
-      }).lean();
+    const { end } = istDayRange(date);
+    studentQuery.createdAt = { $lte: end };
 
-      for (const m of activeMerges) {
-        allowedSections.push(m.guestSection.toUpperCase());
+    const [students, records, practice] = await Promise.all([
+      User.find(studentQuery).select("-password -sessionToken").lean(),
+      Attendance.find({
+        date: { $in: legacyDateVariants(date) },
+        stage: { $in: stageVariants(stage) },
+        language,
+      }).lean(),
+      practiceIndex({ date, language, stage }),
+    ]);
+
+    const recordByUser = new Map();
+    for (const r of records) {
+      const k = String(r.userId);
+      recordByUser.set(k, pickBest(recordByUser.get(k), r));
+    }
+
+    const now = new Date();
+    const roster = students
+      // batchTime = the student's timing for THIS stage (Stage 1 at 5:30 AM, Stage 2 at 3:30 PM, ...)
+      .map((s) => ({ ...s, defaultBatchTime: s.batchTime || "", batchTime: stageBatch(s, language, stage) }))
+      .filter((s) => !batch || s.batchTime === batch)
+      .map((student) => {
+      const record = recordByUser.get(String(student._id));
+      const p = practice.get(`${student._id}|${stage}|${language}`);
+      const practiceInfo = { practiced: !!p, practicedAt: p ? p.practicedAt : null };
+      if (!record) {
+        return { ...student, ...practiceInfo, attendanceStatus: "Absent", totalMinutesSpent: 0, markedAt: null };
       }
 
-      studentQuery.onlineSection = { $in: allowedSections };
-    }
-
-    let rawStage = stage ? stage.toString().toLowerCase().replace(/\s+/g, "") : "stage1";
-    let stageNumber = rawStage.replace(/[^0-9]/g, "");
-    if (!stageNumber) stageNumber = "1";
-    const stageKey = `stage${stageNumber}`;
-
-    const langKey = isHindi ? "hindiAccess" : "englishAccess";
-    studentQuery[`${langKey}.${stageKey}`] = true;
-
-    const students = await User.find(studentQuery).select("-password").lean();
-
-    let targetDateStr = date || getFormattedDate(new Date());
-    let possibleFormats = [targetDateStr];
-
-    const parts = targetDateStr.split("-");
-    let targetDate = null;
-    if (parts.length === 3) {
-      const d = parseInt(parts[0], 10);
-      const m = parseInt(parts[1], 10);
-      const y = parts[2];
-      
-      targetDate = new Date(parseInt(y), m - 1, d);
-      targetDate.setHours(0, 0, 0, 0);
-
-      possibleFormats = [
-        `${d}-${m}-${y}`,
-        `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`,
-        `${String(d).padStart(2, '0')}-${m}-${y}`,
-        `${d}-${String(d).padStart(2, '0')}-${y}`
-      ];
-    }
-
-    const attendanceQuery = {
-      date: { $in: possibleFormats },
-      stage: { $regex: new RegExp(`^stage\\s*${stageNumber}$`, "i") },
-    };
-    if (language && language !== "all") {
-      attendanceQuery.language = { $regex: new RegExp(`^${language}$`, "i") };
-    }
-
-    const attendanceRecords = await Attendance.find(attendanceQuery).lean();
-
-    const filteredStudents = students.filter((student) => {
-      if (targetDate) {
-        const studentCreatedAt = new Date(student.createdAt || student._id.getTimestamp());
-        studentCreatedAt.setHours(0, 0, 0, 0);
-        if (studentCreatedAt > targetDate) {
-          return false;
-        }
-      }
-      return true;
-    });
-
-    const roster = filteredStudents.map((student) => {
-      const record = attendanceRecords.find(
-        (att) => att.userId.toString() === student._id.toString()
-      );
-
-      let currentMins = record ? record.totalMinutesSpent : 0;
-      if (record && record.userMode === "online" && record.joinTime) {
-        const diff = Math.round((new Date() - new Date(record.joinTime)) / 60000);
-        currentMins = Math.min((record.totalMinutesSpent || 0) + Math.max(0, diff), 90);
-      }
-
-      const evaluatedStatus = currentMins >= 45 ? "Present" : (currentMins >= 15 ? "Partial" : (record ? record.status : "Absent"));
+      const isOnline = record.userMode === "online";
+      const mins = isOnline ? liveMinutes(record, now) : record.totalMinutesSpent || 0;
+      const status = isOnline ? deriveOnlineStatus(mins, record.arrivalStatus || record.status) : record.status;
 
       return {
         ...student,
-        attendanceStatus: record ? evaluatedStatus : "Absent",
-        totalMinutesSpent: currentMins,
-        markedAt: record ? record.markedAt || record.joinTime : null,
+        ...practiceInfo,
+        attendanceStatus: status,
+        totalMinutesSpent: mins,
+        markedAt: record.markedAt || record.firstJoinAt || record.joinTime || null,
       };
     });
 
@@ -487,45 +602,121 @@ const getTrainerClassroomRoster = async (req, res) => {
   }
 };
 
+// =====================================================
+// STUDENT: MY ATTENDANCE
+// =====================================================
 const getMyAttendance = async (req, res) => {
   try {
-    const { userId } = req.query;
-    const records = await Attendance.find({ userId }).sort({ createdAt: -1 });
-    res.status(200).json({ total: records.length, records });
+    // Students see only their own log; staff (admin panel) may pass ?userId= to view a student
+    const userId = req.user && !(isStaff(req.user) && req.query.userId) ? String(req.user._id) : req.query.userId;
+    if (!isValidId(userId)) return res.status(400).json({ message: "Valid userId required" });
+
+    const [records, practiceRows] = await Promise.all([
+      Attendance.find({ userId }).sort({ createdAt: -1 }).limit(400).lean(),
+      Practice.find({ userId }).select("date language stage practicedAt").lean(),
+    ]);
+    // 🎤 Which classes the student did speaking practice in
+    const practiced = new Map(practiceRows.map((p) => [`${p.date}|${p.language}|${p.stage}`, p.practicedAt]));
+
+    const now = new Date();
+    const out = records.map((r) => {
+      const row = r.userMode === "online" && r.joinTime ? { ...r, totalMinutesSpent: liveMinutes(r, now) } : { ...r };
+      const key = `${normalizeDateKey(r.date) || r.date}|${r.language}|${normStage(r.stage)}`;
+      row.practiced = practiced.has(key);
+      row.practicedAt = practiced.get(key) || null;
+      return row;
+    });
+    res.status(200).json({ total: out.length, records: out });
   } catch (error) {
     console.error("Get My Attendance Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
+// =====================================================
+// CRON (20:15 IST, after the last batch ends at 20:00)
+// Closes open online sessions and writes ONE "Absent" record for every
+// active student / trainer with no record today. Bulk — 2 queries + 1 write.
+// =====================================================
 const autoMarkAbsent = async (req, res) => {
   try {
     const now = new Date();
-    const dateStr = getFormattedDate(now);
-    const allUsers = await User.find({});
-    let count = 0;
+    const date = dateKey(now);
+    const dates = legacyDateVariants(date);
 
-    for (const user of allUsers) {
-      const userStage = user.teacherStage || "Stage 1";
-      const record = await Attendance.findOne({ userId: user._id, date: dateStr, stage: userStage });
-      if (!record) {
-        await Attendance.create({
-          userId: user._id,
-          userName: user.name,
-          userPhone: user.phone,
-          userMode: user.mode || "offline",
-          language: user.language || "English",
-          date: dateStr,
-          stage: userStage,
-          status: "Absent",
-          totalMinutesSpent: 0,
-        });
-        count++;
-      }
+    // 1. Close sessions left open (app killed, network lost)
+    const open = await Attendance.find({ date: { $in: dates }, joinTime: { $ne: null } });
+    for (const r of open) {
+      closeSegment(r, new Date(Math.min(now, new Date(r.lastActiveTime || r.joinTime).getTime() + 5 * 60000)));
+      r.joinTime = null;
+      r.leaveTime = r.lastActiveTime;
+      r.status = deriveOnlineStatus(r.totalMinutesSpent, r.arrivalStatus || r.status);
+      await r.save();
     }
-    if (res) res.status(200).json({ message: `Marked ${count} absent.` });
+
+    // 2. Absent rows for everyone with nothing today
+    const withRecord = await Attendance.distinct("userId", { date: { $in: dates } });
+    const seen = new Set(withRecord.map(String));
+
+    const anyAccess = ["englishAccess", "hindiAccess"].flatMap((f) =>
+      [1, 2, 3, 4, 5, 6, 7].map((n) => ({ [`${f}.stage${n}`]: true }))
+    );
+    const users = await User.find({
+      $or: [{ role: { $in: STAFF_ROLES } }, { role: "student", $or: anyAccess }],
+    })
+      .select("name phone mode language role teacherStage batchTime englishBatch hindiBatch englishAccess hindiAccess")
+      .lean();
+
+    const highestStage = (map) => {
+      for (let n = 7; n >= 1; n--) if (map && map[`stage${n}`]) return `stage${n}`;
+      return null;
+    };
+
+    const ops = [];
+    for (const u of users) {
+      if (seen.has(String(u._id))) continue;
+
+      let stage = normStage(u.teacherStage) || "stage1";
+      let language = u.language || "English";
+      if (u.role === "student") {
+        const eng = highestStage(u.englishAccess);
+        const hin = highestStage(u.hindiAccess);
+        language = eng ? "English" : "Hindi";
+        stage = eng || hin || "stage1";
+      }
+
+      ops.push({
+        updateOne: {
+          filter: { userId: u._id, date, stage, language },
+          update: {
+            $setOnInsert: {
+              userId: u._id,
+              userName: u.name,
+              userPhone: u.phone,
+              userMode: u.mode || "offline",
+              language,
+              stage,
+              date,
+              batchTime: (u.role === "student" && stageBatch(u, language, stage)) || "N/A",
+              status: "Absent",
+              arrivalStatus: "Absent",
+              totalMinutesSpent: 0,
+              secondsSpent: 0,
+            },
+          },
+          upsert: true,
+        },
+      });
+    }
+
+    if (ops.length) await Attendance.bulkWrite(ops, { ordered: false });
+
+    const message = `Closed ${open.length} open sessions, marked ${ops.length} absent.`;
+    console.log(`✅ Auto-absent ${date}: ${message}`);
+    if (res) res.status(200).json({ message });
   } catch (error) {
     console.error("Auto Absent Error:", error);
+    if (res) res.status(500).json({ message: "Server Error" });
   }
 };
 
@@ -536,8 +727,10 @@ module.exports = {
   leaveOnlineClass,
   getAttendanceSheet,
   getAllStudentsFiltered,
-  getAllTeachersFiltered,
   getTrainerClassroomRoster,
   getMyAttendance,
+  getBatchVisitors,
   autoMarkAbsent,
+  // exported for tests
+  _internal: { evaluateStudentBatchStatus, evaluateTeacherStatus, deriveOnlineStatus, closeSegment, haversineMeters },
 };

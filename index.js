@@ -1,3 +1,7 @@
+// Must be the very first line: every Date in this process uses India time.
+// (Attendance logic also uses explicit IST helpers in utils/time.js.)
+process.env.TZ = "Asia/Kolkata";
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -6,67 +10,60 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const cron = require("node-cron");
 
-// =====================================================
-// ENVIRONMENT
-// =====================================================
-
 dotenv.config();
 
-// =====================================================
-// ROUTES
-// =====================================================
+const { getJwtSecret, resolveUser } = require("./middleware/authMiddleware");
+const { STAFF_ROLES } = require("./utils/normalize");
 
+// =====================================================
+// ENVIRONMENT CHECK — fail fast instead of running half-configured
+// =====================================================
+try {
+  if (!process.env.MONGO_URI) throw new Error("MONGO_URI is missing");
+  getJwtSecret();
+} catch (err) {
+  console.error(`❌ Config error: ${err.message}`);
+  process.exit(1);
+}
+if (!process.env.STREAM_API_KEY || !process.env.STREAM_API_SECRET) {
+  console.warn("⚠️ STREAM_API_KEY / STREAM_API_SECRET not set — live classes will fail to get tokens");
+}
+console.log(`🔐 ENFORCE_AUTH = ${process.env.ENFORCE_AUTH === "true" ? "ON" : "OFF (transition mode)"}`);
+
+// =====================================================
+// ROUTES / CONTROLLERS
+// =====================================================
 const userRoutes = require("./Routes/UserRoutes/authRoute");
 const testRoutes = require("./Routes/UserRoutes/testRoute");
 const liveRoutes = require("./Routes/UserRoutes/liveRoute");
 const streamRoute = require("./Routes/UserRoutes/streamRoute");
 const sectionMergeRoutes = require("./Routes/UserRoutes/sectionMergeRoute");
 const feeRoutes = require("./Routes/UserRoutes/feeRoute");
+const practiceRoutes = require("./Routes/UserRoutes/practiceRoute");
+
+const { autoMarkAbsent } = require("./Controllers/UserContollers/attendanceController");
+const { resetMonthlyFeesForNewMonth } = require("./Controllers/UserContollers/authController");
 
 // =====================================================
-// CONTROLLERS
+// APP + SOCKET.IO
 // =====================================================
-
-const {
-  autoMarkAbsent,
-} = require("./Controllers/UserContollers/attendanceController");
-
-const {
-  resetMonthlyFeesForNewMonth,
-} = require("./Controllers/UserContollers/authController");
-
-// =====================================================
-// EXPRESS APP
-// =====================================================
-
 const app = express();
 const server = http.createServer(app);
 
-// =====================================================
-// SOCKET.IO
-// =====================================================
+app.set("trust proxy", 1); // Render sits behind a proxy (needed for correct client IPs / rate limits)
+app.disable("x-powered-by");
+
+const corsOrigin = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim()) : "*";
 
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: { origin: corsOrigin, methods: ["GET", "POST"] },
+  pingInterval: 25000,
+  pingTimeout: 20000,
 });
 
-// =====================================================
-// PORT
-// =====================================================
+app.use(cors({ origin: corsOrigin }));
+app.use(express.json({ limit: "1mb" }));
 
-const PORT = process.env.PORT || 5000;
-
-// =====================================================
-// MIDDLEWARE
-// =====================================================
-
-app.use(cors());
-app.use(express.json());
-
-// Attach Socket.IO to every request so controllers can broadcast events live
 app.use((req, res, next) => {
   req.io = io;
   next();
@@ -75,188 +72,162 @@ app.use((req, res, next) => {
 // =====================================================
 // ROUTES
 // =====================================================
-
 app.use("/api", userRoutes);
 app.use("/api/test", testRoutes);
 app.use("/api/live", liveRoutes);
 app.use("/api/stream", streamRoute);
 app.use("/api/admin", sectionMergeRoutes);
 app.use("/api/fee", feeRoutes);
-
-// =====================================================
-// BASIC HEALTH CHECK
-// =====================================================
+app.use("/api/practice", practiceRoutes);
 
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
     message: "Let's Speak Backend is running",
-    database:
-      mongoose.connection.readyState === 1
-        ? "connected"
-        : "disconnected",
+    database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     time: new Date().toISOString(),
   });
 });
 
+// 404
+app.use((req, res) => res.status(404).json({ message: "Not found" }));
+
+// Central error handler (multer limits, bad JSON, etc.)
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err && (err.code === "LIMIT_FILE_SIZE" || err.name === "MulterError")) {
+    return res.status(400).json({ message: err.code === "LIMIT_FILE_SIZE" ? "File too large (max 5 MB)" : err.message });
+  }
+  if (err && err.type === "entity.parse.failed") {
+    return res.status(400).json({ message: "Invalid JSON body" });
+  }
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error("❌ Unhandled route error:", err);
+  res.status(status).json({ message: status >= 500 ? "Server Error" : err.message });
+});
+
 // =====================================================
-// SOCKET CONNECTION & ROOM MAPPING
+// SOCKET AUTH + ROOMS
+// Clients may send their JWT: io(url, { auth: { token } }).
 // =====================================================
+io.use(async (socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  if (token) {
+    const { user } = await resolveUser(String(token));
+    if (user) socket.data.user = user;
+  }
+  next();
+});
 
 io.on("connection", (socket) => {
-  console.log("🔌 Client connected:", socket.id);
+  const user = socket.data.user;
+  const enforce = process.env.ENFORCE_AUTH === "true";
 
-  // -----------------------------------------------
-  // JOIN USER ROOM (Ensures student receives permission updates)
-  // -----------------------------------------------
+  // Auto-join own room when the token is known
+  if (user) socket.join(String(user._id));
+
   socket.on("join_user_room", (userId) => {
-    if (!userId) {
-      console.log("⚠️ No userId provided for room join");
-      return;
-    }
+    if (!userId) return;
     const cleanId = String(userId).trim();
+    if (user && String(user._id) !== cleanId) return; // can't listen to someone else's room
+    if (!user && enforce) return;
     socket.join(cleanId);
-    console.log(`👤 User joined personal update room: ${cleanId}`);
   });
 
-  // -----------------------------------------------
-  // JOIN ADMIN ROOM
-  // -----------------------------------------------
   socket.on("join_admin_room", () => {
+    if (user && !STAFF_ROLES.includes(user.role)) return;
+    if (!user && enforce) return;
     socket.join("admin_room");
-    console.log(`🛠️ Admin joined broadcast room: ${socket.id}`);
-  });
-
-  // -----------------------------------------------
-  // DISCONNECT
-  // -----------------------------------------------
-  socket.on("disconnect", (reason) => {
-    console.log(`🔌 Client disconnected: ${socket.id} | Reason: ${reason}`);
   });
 });
 
 // =====================================================
-// MONGODB CONNECTION WITH HIGH-SCALE POOLING
+// DATABASE
 // =====================================================
-
 const connectDatabase = async () => {
-  try {
-    if (!process.env.MONGO_URI) {
-      throw new Error("MONGO_URI is missing in environment variables");
+  await mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 10000,
+    maxPoolSize: 50,
+    minPoolSize: 5,
+  });
+  console.log(`✅ MongoDB connected (${mongoose.connection.name})`);
+};
+
+// One-time fixes for indexes that were causing data loss / collisions
+const runStartupMigrations = async () => {
+  const drop = async (collection, indexName, why) => {
+    try {
+      await mongoose.connection.db.collection(collection).dropIndex(indexName);
+      console.log(`🧹 Dropped index ${collection}.${indexName} (${why})`);
+    } catch (err) {
+      if (err.codeName !== "IndexNotFound" && err.code !== 27 && err.codeName !== "NamespaceNotFound") {
+        console.warn(`⚠️ Could not drop ${collection}.${indexName}: ${err.message}`);
+      }
     }
+  };
+  await drop("results", "completedAt_1", "TTL was deleting test results after 4 days");
+  await drop("attendances", "userId_1_stage_1_date_1_batchTime_1", "replaced by index that includes language");
 
-    await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 10000,
-      maxPoolSize: 50,
-      minPoolSize: 10,
-    });
-
-    console.log("========================================");
-    console.log("✅ MongoDB is connected successfully (High Scale Pool Active)");
-    console.log(`📊 Database: ${mongoose.connection.name}`);
-    console.log("========================================");
-  } catch (error) {
-    console.error("========================================");
-    console.error("❌ MongoDB connection failed");
-    console.error(error.message);
-    console.error("========================================");
-
-    process.exit(1);
+  // Build the new indexes defined in the models
+  for (const name of ["User", "Attendance", "Result"]) {
+    try {
+      await mongoose.model(name).syncIndexes();
+    } catch (err) {
+      console.warn(`⚠️ Index sync for ${name}: ${err.message}`);
+    }
   }
 };
 
-// =====================================================
-// MONGODB EVENTS
-// =====================================================
-
-mongoose.connection.on("connected", () => {
-  console.log("🟢 MongoDB connection established");
-});
-
-mongoose.connection.on("error", (error) => {
-  console.error("❌ MongoDB error:", error.message);
-});
-
-mongoose.connection.on("disconnected", () => {
-  console.log("🔴 MongoDB disconnected");
-});
+mongoose.connection.on("error", (error) => console.error("❌ MongoDB error:", error.message));
+mongoose.connection.on("disconnected", () => console.log("🔴 MongoDB disconnected"));
 
 // =====================================================
-// CRON JOB 1: AUTO MARK ABSENT
+// CRON JOBS (India time)
 // =====================================================
+const cronOptions = { timezone: "Asia/Kolkata", noOverlap: true };
 
+// 20:15 IST — after the last batch (6:30–8:00 PM) has finished
 const autoAbsentCron = cron.schedule(
-  "50 18 * * *",
+  process.env.AUTO_ABSENT_CRON || "15 20 * * *",
   async () => {
     if (mongoose.connection.readyState !== 1) return;
-    try {
-      await autoMarkAbsent();
-      console.log("✅ Auto-absent completed successfully");
-    } catch (error) {
-      console.error("❌ Auto-absent cron error:", error);
-    }
+    await autoMarkAbsent();
   },
-  {
-    timezone: "Asia/Kolkata",
-    noOverlap: true,
-  }
+  cronOptions
 );
-
-// =====================================================
-// CRON JOB 2: MONTHLY FEE RESET
-// =====================================================
 
 const monthlyFeeCron = cron.schedule(
   "0 0 1 * *",
   async () => {
     if (mongoose.connection.readyState !== 1) return;
-    try {
-      await resetMonthlyFeesForNewMonth();
-      console.log("✅ Monthly fee reset completed successfully");
-    } catch (error) {
-      console.error("❌ Monthly fee reset cron error:", error);
-    }
+    await resetMonthlyFeesForNewMonth();
   },
-  {
-    timezone: "Asia/Kolkata",
-    noOverlap: true,
-  }
+  cronOptions
 );
 
 // =====================================================
-// START SERVER
+// START / SHUTDOWN
 // =====================================================
+const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
   try {
     await connectDatabase();
-
+    await runStartupMigrations();
     server.listen(PORT, "0.0.0.0", () => {
-      console.log("");
-      console.log("========================================");
-      console.log("🚀 LET'S SPEAK BACKEND STARTED");
-      console.log("========================================");
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`🌐 Local: http://localhost:${PORT}`);
-      console.log("🇮🇳 Cron timezone: Asia/Kolkata");
-      console.log("🟢 MongoDB: Connected");
-      console.log("========================================");
-      console.log("");
+      console.log(`🚀 Let's Speak backend on port ${PORT} (timezone ${process.env.TZ})`);
     });
   } catch (error) {
-    console.error("❌ Server startup failed:", error);
+    console.error("❌ Server startup failed:", error.message);
     process.exit(1);
   }
 };
 
-// =====================================================
-// GRACEFUL SHUTDOWN & UNHANDLED ERRORS
-// =====================================================
-
-const shutdown = async (signal) => {
+const shutdown = async () => {
   try {
     autoAbsentCron.stop();
     monthlyFeeCron.stop();
+    io.close();
     server.close();
     await mongoose.connection.close();
     process.exit(0);
@@ -265,16 +236,19 @@ const shutdown = async (signal) => {
   }
 };
 
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-process.on("unhandledRejection", (reason) => {
-  console.error("❌ UNHANDLED PROMISE REJECTION", reason);
-});
-
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+process.on("unhandledRejection", (reason) => console.error("❌ UNHANDLED PROMISE REJECTION", reason));
 process.on("uncaughtException", (error) => {
   console.error("❌ UNCAUGHT EXCEPTION", error);
   setTimeout(() => process.exit(1), 1000);
 });
 
-startServer();
+if (require.main === module) startServer();
+
+const stopCrons = () => {
+  autoAbsentCron.stop();
+  monthlyFeeCron.stop();
+};
+
+module.exports = { app, server, io, startServer, runStartupMigrations, stopCrons };

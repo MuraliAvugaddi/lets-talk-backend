@@ -1,17 +1,28 @@
 const User = require("../../Models/users");
 const FeeHistory = require("../../Models/feeHistory");
 const { uploadBufferToCloudinary } = require("../../utils/cloudinary");
+const { monthKey } = require("../../utils/time");
+const { isValidId } = require("../../utils/normalize");
 
-// --- STUDENT: Upload Screenshot ---
+const notifyAdmins = (req, event, payload) => {
+  if (req.io) req.io.to("admin_room").emit(event, payload);
+};
+
+// =====================================================
+// STUDENT: upload payment screenshot
+// POST /api/fee/upload-fee-screenshot  (multipart: screenshot, userId)
+// =====================================================
 const uploadFeeScreenshot = async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!req.file) {
-      return res.status(400).json({ message: "No screenshot file uploaded" });
-    }
+    const userId = req.user ? String(req.user._id) : req.body.userId;
+    if (!isValidId(userId)) return res.status(400).json({ message: "Valid userId required" });
+    if (!req.file) return res.status(400).json({ message: "No screenshot file uploaded" });
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.feeStatus === "paid") {
+      return res.status(400).json({ message: "Your fee for this month is already verified." });
+    }
 
     const cloudinaryResponse = await uploadBufferToCloudinary(req.file.buffer);
 
@@ -20,16 +31,13 @@ const uploadFeeScreenshot = async (req, res) => {
     user.feeSubmittedAt = new Date();
     await user.save();
 
-    // 🚀 CRITICAL: Broadcast real-time fee submission to admin sockets
-    if (req.io) {
-      req.io.emit('fee_update', { userId: user._id });
-      req.io.emit('student_update', { userId: user._id });
-    }
+    notifyAdmins(req, "fee_update", { userId: user._id });
+    notifyAdmins(req, "student_update", { userId: user._id });
 
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       message: "Screenshot uploaded successfully, waiting for manager review.",
-      url: cloudinaryResponse.secure_url 
+      url: cloudinaryResponse.secure_url,
     });
   } catch (error) {
     console.error("Cloudinary Upload Error:", error);
@@ -37,24 +45,33 @@ const uploadFeeScreenshot = async (req, res) => {
   }
 };
 
-// --- MANAGER: Verify / Approve / Reject ---
+// =====================================================
+// MANAGER: approve / reject  { userId, status: "verified" | "rejected" }
+// =====================================================
 const verifyFeePayment = async (req, res) => {
   try {
     const { userId, status } = req.body;
+    if (!isValidId(userId)) return res.status(400).json({ message: "Valid userId required" });
+    if (!["verified", "rejected"].includes(status)) {
+      return res.status(400).json({ message: "status must be 'verified' or 'rejected'" });
+    }
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
     user.feeStatus = status === "verified" ? "paid" : "unpaid";
     user.feePaymentStatus = status;
-    if (status === "verified") {
-      user.lastFeePaymentDate = new Date();
-    }
+    user.feeVerifiedBy = req.user ? req.user._id : null;
+    if (status === "verified") user.lastFeePaymentDate = new Date();
     await user.save();
 
+    notifyAdmins(req, "fee_update", { userId: user._id });
+    notifyAdmins(req, "student_update", { userId: user._id });
     if (req.io) {
-      req.io.emit('fee_update', { userId: user._id });
-      req.io.emit('student_update', { userId: user._id });
+      req.io.to(String(user._id)).emit("permissions_updated", {
+        feeStatus: user.feeStatus,
+        feePaymentStatus: user.feePaymentStatus,
+      });
     }
 
     res.status(200).json({ success: true, message: `Fee status updated to ${status}` });
@@ -64,11 +81,11 @@ const verifyFeePayment = async (req, res) => {
   }
 };
 
-// --- MANAGER: Get Pending Verification Requests (FIXED: Includes Screenshot projection) ---
 const getPendingFeeSubmissions = async (req, res) => {
   try {
     const students = await User.find({ feePaymentStatus: "pending_verification" })
       .select("name phone mode onlineSection feePaymentScreenshot feeSubmittedAt feePaymentStatus")
+      .sort({ feeSubmittedAt: 1 })
       .lean();
     res.status(200).json({ success: true, students });
   } catch (error) {
@@ -77,39 +94,31 @@ const getPendingFeeSubmissions = async (req, res) => {
   }
 };
 
-// --- MANAGER: Get All Fee History & Analytics ---
 const getAllFeeHistory = async (req, res) => {
   try {
-    const now = new Date();
-    const currentMonthYear = `${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`;
-
-    const totalStudents = await User.countDocuments({ role: "student" });
-    const totalPaid = await User.countDocuments({ role: "student", feeStatus: "paid" });
-    const totalUnpaid = totalStudents - totalPaid;
-
-    let historyRecords = await FeeHistory.find({}).sort({ archivedAt: -1 }).lean();
+    const [totalStudents, totalPaid, historyRecords, students] = await Promise.all([
+      User.countDocuments({ role: "student" }),
+      User.countDocuments({ role: "student", feeStatus: "paid" }),
+      FeeHistory.find({}).sort({ archivedAt: -1 }).lean(),
+      User.find({ feePaymentStatus: { $in: ["verified", "rejected", "pending_verification"] } })
+        .select("name phone mode onlineSection feePaymentScreenshot feeSubmittedAt feePaymentStatus lastFeePaymentDate")
+        .sort({ updatedAt: -1 })
+        .lean(),
+    ]);
 
     const currentLiveSummary = {
-      monthYear: currentMonthYear,
+      monthYear: monthKey(),
       totalStudents,
       totalPaid,
-      totalUnpaid,
+      totalUnpaid: totalStudents - totalPaid,
       isCurrentMonth: true,
     };
 
-    // Also fetch students who have payment logs for history view
-    const students = await User.find({ 
-      feePaymentStatus: { $in: ["verified", "rejected", "pending_verification"] } 
-    })
-      .select("name phone mode onlineSection feePaymentScreenshot feeSubmittedAt feePaymentStatus lastFeePaymentDate")
-      .sort({ updatedAt: -1 })
-      .lean();
-
-    res.status(200).json({ 
-      success: true, 
-      students, // 🚀 Added students list for the history tab list view
+    res.status(200).json({
+      success: true,
+      students,
       currentMonth: currentLiveSummary,
-      history: [currentLiveSummary, ...historyRecords] 
+      history: [currentLiveSummary, ...historyRecords],
     });
   } catch (error) {
     console.error("Get Fee History Error:", error);
@@ -117,9 +126,4 @@ const getAllFeeHistory = async (req, res) => {
   }
 };
 
-module.exports = { 
-  uploadFeeScreenshot, 
-  verifyFeePayment, 
-  getPendingFeeSubmissions, 
-  getAllFeeHistory 
-};
+module.exports = { uploadFeeScreenshot, verifyFeePayment, getPendingFeeSubmissions, getAllFeeHistory };

@@ -1,9 +1,12 @@
 const express = require("express");
 const router = express.Router();
-//const { getStreamToken } = require("../../Controllers/UserContollers/streamController");
-const { getStreamToken } = require("../../Controllers/UserContollers/streamController");
+const { getStreamToken, prepareCall } = require("../../Controllers/UserContollers/streamController");
+const { auth } = require("../../middleware/authMiddleware");
 
 // POST /api/stream/token
-router.post("/token", getStreamToken);
+router.post("/token", auth(), getStreamToken);
+
+// POST /api/stream/prepare-call → { callId, started }
+router.post("/prepare-call", auth(), prepareCall);
 
 module.exports = router;
