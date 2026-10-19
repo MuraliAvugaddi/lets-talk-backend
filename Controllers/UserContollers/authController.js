@@ -76,7 +76,7 @@ const resetMonthlyFeesForNewMonth = async () => {
     await FeeHistory.findOneAndUpdate(
       { monthYear: prevMonthYear },
       { totalStudents, totalPaid, totalUnpaid: totalStudents - totalPaid, archivedAt: new Date() },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     const result = await User.updateMany(
@@ -145,7 +145,7 @@ const registerUser = async (req, res) => {
       feeStatus: "unpaid",
     });
 
-    notifyAdmins(req, "student_update", { userId: user._id });
+    notifyAdmins(req, "student_update", { userId: String(user._id), by: req.user && String(req.user._id) === String(user._id) ? "student" : "admin", user: toPublicUser(user) });
     notifyAdmins(req, "new_user_registered", { userId: user._id });
 
     res.status(201).json({
@@ -244,6 +244,24 @@ const getUserProfile = async (req, res) => {
     res.status(200).json(user);
   } catch (error) {
     console.error("Get Profile Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// =====================================================
+// ADMIN: ONE STUDENT  GET /api/admin/student/:id
+// Used by the Student Control screen to stay live (no refresh needed).
+// =====================================================
+const getStudentById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: "Valid id required" });
+    const user = await User.findById(id).select(PUBLIC_FIELDS).lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.set("Cache-Control", "no-store");
+    res.status(200).json({ user: { ...user, id: user._id } });
+  } catch (error) {
+    console.error("Get Student Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
@@ -377,7 +395,7 @@ const updateUserAccess = async (req, res) => {
         onlineSection: user.onlineSection,
       });
     }
-    notifyAdmins(req, "student_update", { userId: user._id });
+    notifyAdmins(req, "student_update", { userId: String(user._id), by: req.user && String(req.user._id) === String(user._id) ? "student" : "admin", user: toPublicUser(user) });
 
     const out = user.toObject();
     delete out.password;
@@ -427,7 +445,7 @@ const updateStudentStatus = async (req, res) => {
         hindiBatch: user.hindiBatch,
       });
     }
-    notifyAdmins(req, "student_update", { userId: user._id });
+    notifyAdmins(req, "student_update", { userId: String(user._id), by: req.user && String(req.user._id) === String(user._id) ? "student" : "admin", user: toPublicUser(user) });
 
     const out = user.toObject();
     delete out.password;
@@ -481,7 +499,7 @@ const updateMyBatchTime = async (req, res) => {
 
     await user.save();
 
-    notifyAdmins(req, "student_update", { userId: user._id });
+    notifyAdmins(req, "student_update", { userId: String(user._id), by: req.user && String(req.user._id) === String(user._id) ? "student" : "admin", user: toPublicUser(user) });
     if (req.io) {
       req.io.to(String(user._id)).emit("permissions_updated", {
         batchTime: user.batchTime,
@@ -528,7 +546,7 @@ const deleteUser = async (req, res) => {
     }
 
     await User.deleteOne({ _id: id });
-    notifyAdmins(req, "student_update", { userId: id });
+    notifyAdmins(req, "student_update", { userId: String(id), deleted: true });
 
     res.status(200).json({ message: "User deleted successfully" });
   } catch (error) {
@@ -543,6 +561,7 @@ module.exports = {
   resetPassword,
   getUserProfile,
   getAllUsers,
+  getStudentById,
   getUsersByStage,
   getAllTeachersFiltered,
   updateUserAccess,

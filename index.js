@@ -40,6 +40,8 @@ const streamRoute = require("./Routes/UserRoutes/streamRoute");
 const sectionMergeRoutes = require("./Routes/UserRoutes/sectionMergeRoute");
 const feeRoutes = require("./Routes/UserRoutes/feeRoute");
 const practiceRoutes = require("./Routes/UserRoutes/practiceRoute");
+const promoRoutes = require("./Routes/UserRoutes/promoRoute");
+const classModeRoutes = require("./Routes/UserRoutes/classModeRoute");
 
 const { autoMarkAbsent } = require("./Controllers/UserContollers/attendanceController");
 const { resetMonthlyFeesForNewMonth } = require("./Controllers/UserContollers/authController");
@@ -79,6 +81,8 @@ app.use("/api/stream", streamRoute);
 app.use("/api/admin", sectionMergeRoutes);
 app.use("/api/fee", feeRoutes);
 app.use("/api/practice", practiceRoutes);
+app.use("/api/promo", promoRoutes); // posters & reels on the student home screen
+app.use("/api/class-mode", classModeRoutes); // 🌧 rain day / 🎙 principal class
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -166,10 +170,28 @@ const runStartupMigrations = async () => {
     }
   };
   await drop("results", "completedAt_1", "TTL was deleting test results after 4 days");
+
+  // 🧹 Any TTL index left from old schemas (tests.createdAt, results.completedAt, …) keeps deleting
+  // documents in MongoDB even after `expires` was removed from the code. None of our data should
+  // expire on its own, so remove every TTL index we find.
+  try {
+    const collections = await mongoose.connection.db.listCollections({}, { nameOnly: true }).toArray();
+    for (const { name } of collections) {
+      if (name.startsWith("system.")) continue;
+      const indexes = await mongoose.connection.db.collection(name).indexes().catch(() => []);
+      for (const ix of indexes) {
+        if (ix.expireAfterSeconds !== undefined && ix.name !== "_id_") {
+          await drop(name, ix.name, `TTL index (expireAfterSeconds=${ix.expireAfterSeconds}) was auto-deleting data`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ TTL index check: ${err.message}`);
+  }
   await drop("attendances", "userId_1_stage_1_date_1_batchTime_1", "replaced by index that includes language");
 
   // Build the new indexes defined in the models
-  for (const name of ["User", "Attendance", "Result"]) {
+  for (const name of ["User", "Attendance", "Result", "Test"]) {
     try {
       await mongoose.model(name).syncIndexes();
     } catch (err) {

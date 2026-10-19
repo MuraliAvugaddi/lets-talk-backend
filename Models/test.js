@@ -6,19 +6,22 @@ const questionSchema = new mongoose.Schema({
   correctOptionIndex: { type: Number, required: true }, // 0, 1, 2, or 3
 });
 
-const testSchema = new mongoose.Schema({
-  language: { type: String, enum: ["English", "Hindi"], required: true },
-  stage: { type: String, required: true }, // e.g., "stage1", "stage2"
-  isActive: { type: Boolean, default: false }, // Admin toggles this to "Schedule" the test
-  durationMinutes: { type: Number, default: 25 },
-  questions: [questionSchema], // List of questions
-  
-  // 🚀 TTL `expires` field removed so test results & data remain permanently saved
-  createdAt: { 
-    type: Date, 
-    default: Date.now, 
-  } 
-}, { timestamps: true });
+// ⚠️ NO `expires` / TTL anywhere: tests stay until the admin deletes them.
+// (An old TTL index left in MongoDB was deleting tests by itself — index.js drops it on startup.)
+const testSchema = new mongoose.Schema(
+  {
+    language: { type: String, enum: ["English", "Hindi"], required: true },
+    stage: { type: String, required: true }, // "stage1" … "stage7"
+    isActive: { type: Boolean, default: false }, // admin can pause / resume
+    durationMinutes: { type: Number, default: 25 },
+    questions: [questionSchema],
+    // Set every time the admin publishes. A student who took an OLDER version can take the new one.
+    publishedAt: { type: Date, default: Date.now },
+  },
+  { timestamps: true }
+);
 
-module.exports = mongoose.model("Test", testSchema);
+testSchema.index({ language: 1, stage: 1 });
 
+// Reuse the model if it was already loaded (stops "Cannot overwrite `Test` model once compiled")
+module.exports = mongoose.models.Test || mongoose.model("Test", testSchema);

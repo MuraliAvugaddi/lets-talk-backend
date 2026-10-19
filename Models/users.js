@@ -46,6 +46,9 @@ const userSchema = new mongoose.Schema(
       default: "not_submitted",
     },
     feeSubmittedAt: { type: Date, default: null },
+    // Which course this month's fee screenshot is for (student picks it when uploading)
+    feeLanguage: { type: String, enum: ["", "English", "Hindi"], default: "" },
+    feeScreenshotPublicId: { type: String, default: "" }, // Cloudinary id (so a wrong screenshot can be deleted)
     feeVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
     sessionToken: { type: String, default: "" },

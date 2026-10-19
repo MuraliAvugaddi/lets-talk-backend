@@ -9,7 +9,10 @@ const setNotification = async (req, res) => {
       return res.status(400).json({ message: "message and targetMode are required." });
     }
 
-    const cleanMode = targetMode.toLowerCase().trim(); // 'online' or 'offline'
+    const cleanMode = String(targetMode).toLowerCase().trim(); // 'online' | 'offline' | 'all'
+    if (!["online", "offline", "all"].includes(cleanMode)) {
+      return res.status(400).json({ message: "targetMode must be online, offline or all" });
+    }
 
     // Remove old active notice specifically for this mode
     await Notification.deleteMany({ targetMode: cleanMode });
@@ -25,6 +28,7 @@ const setNotification = async (req, res) => {
         hasNotification: true,
         message: newNotif.message,
         targetMode: newNotif.targetMode,
+        createdAt: newNotif.createdAt,
       });
     }
 
@@ -81,16 +85,18 @@ const getNotification = async (req, res) => {
       return res.status(400).json({ message: "Mode query parameter is required ('online' or 'offline')" });
     }
 
-    const cleanMode = mode.toLowerCase().trim();
+    const cleanMode = String(mode).toLowerCase().trim();
 
-    // Query exclusively for this mode
-    const notif = await Notification.findOne({ targetMode: cleanMode }).sort({ createdAt: -1 });
+    // This mode's notice, or one posted for everybody ("all") — newest wins
+    const notif = await Notification.findOne({ targetMode: { $in: [cleanMode, "all"] } }).sort({ createdAt: -1 });
+    res.set("Cache-Control", "no-store"); // phones / browsers must never show an old notice
 
     if (notif && notif.message && notif.message.trim().length > 0) {
       return res.status(200).json({
         hasNotification: true,
         message: notif.message,
         targetMode: notif.targetMode,
+        createdAt: notif.createdAt,
       });
     }
 

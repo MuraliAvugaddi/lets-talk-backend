@@ -31,6 +31,27 @@ const attendanceSchema = new mongoose.Schema(
     leaveTime: { type: Date },
     secondsSpent: { type: Number, default: 0 }, // exact counter
     totalMinutesSpent: { type: Number, default: 0 }, // integer minutes (apps read this)
+
+    // Joined a DIFFERENT timing than their own (e.g. timing 03:30 PM, joined 09:00 AM).
+    // Attendance still counts; admin/trainer see "joined another timing".
+    otherBatch: { type: Boolean, default: false },
+    joinedBatch: { type: String, default: "" }, // the timing they actually attended
+
+    // ⏰ How late (minutes after the on-time limit). 0 = on time.
+    lateByMinutes: { type: Number, default: 0 },
+    // Trainers: "morning" / "afternoon" (two attendances a day). Students: "".
+    shift: { type: String, default: "" },
+    // Online: every time they were in class today → admin sees "05:34–05:50, 06:02–06:40"
+    sessions: [
+      {
+        _id: false,
+        in: { type: Date },
+        out: { type: Date, default: null },
+      },
+    ],
+
+    // Special day: "rain" = offline class held online, "assembly" = principal class (one call for everyone)
+    classMode: { type: String, enum: ["", "rain", "assembly"], default: "" },
   },
   { timestamps: true }
 );

@@ -27,6 +27,8 @@ const submitFeedback = async (req, res) => {
       rating,
       comment,
     });
+    // ⚡ Admin feedback screen updates instantly (no refresh)
+    if (req.io) req.io.to("admin_room").emit("feedback_new", { feedback: newFeedback });
     res.status(201).json({ message: "Feedback submitted successfully!", data: newFeedback });
   } catch (error) {
     console.error("Submit Feedback Error:", error);
@@ -50,6 +52,7 @@ const getAllFeedbacks = async (req, res) => {
     }
 
     const feedbacks = await Feedback.find(query).sort({ createdAt: -1 }).limit(500).lean();
+    res.set("Cache-Control", "no-store"); // browsers must never show an old list
     res.status(200).json({ feedbacks });
   } catch (error) {
     console.error("Get Feedbacks Error:", error);
@@ -62,6 +65,7 @@ const deleteFeedback = async (req, res) => {
     if (!isValidId(req.params.id)) return res.status(400).json({ message: "Invalid id" });
     const feedback = await Feedback.findByIdAndDelete(req.params.id);
     if (!feedback) return res.status(404).json({ message: "Feedback not found" });
+    if (req.io) req.io.to("admin_room").emit("feedback_deleted", { id: String(feedback._id) });
     res.status(200).json({ message: "Feedback removed successfully" });
   } catch (error) {
     console.error("Delete Feedback Error:", error);

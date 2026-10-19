@@ -20,6 +20,9 @@ const resultSchema = new mongoose.Schema(
       },
     ],
     completedAt: { type: Date, default: Date.now },
+    // Which published version of the test this result belongs to (Test.publishedAt as ms).
+    // Results are NEVER deleted — not by time, not when the admin deletes or re-publishes a test.
+    testVersion: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
@@ -27,4 +30,4 @@ const resultSchema = new mongoose.Schema(
 resultSchema.index({ userId: 1, language: 1, stage: 1 });
 resultSchema.index({ language: 1, stage: 1, completedAt: -1 });
 
-module.exports = mongoose.model("Result", resultSchema);
+module.exports = mongoose.models.Result || mongoose.model("Result", resultSchema);

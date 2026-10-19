@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const { listHolidays, addHolidays, removeHoliday } = require("../../Controllers/UserContollers/holidayController");
 
 const {
   registerUser,
@@ -7,6 +8,7 @@ const {
   resetPassword,
   getUserProfile,
   getAllUsers,
+  getStudentById,
   updateUserAccess,
   deleteUser,
   getUsersByStage,
@@ -31,7 +33,9 @@ const {
   getTrainerClassroomRoster,
   getMyAttendance,
   autoMarkAbsent,
+  getTrainerAttendance,
   getBatchVisitors,
+  getBatchSummary,
 } = require("../../Controllers/UserContollers/attendanceController");
 
 const {
@@ -41,7 +45,9 @@ const {
 } = require("../../Controllers/UserContollers/feedbackController");
 
 const { getAttendanceReport } = require("../../Controllers/UserContollers/reportController");
-const { getLeaderboard } = require("../../Controllers/UserContollers/leaderboardController");
+const { getLeaderboard, getRatingLeaderboard } = require("../../Controllers/UserContollers/leaderboardController");
+const { getBestStudents } = require("../../Controllers/UserContollers/bestStudentController");
+const { getClassLoad } = require("../../Controllers/UserContollers/classLoadController");
 
 const { auth, requireAuth } = require("../../middleware/authMiddleware");
 const { loginLimiter, resetLimiter, registerLimiter } = require("../../middleware/rateLimit");
@@ -70,11 +76,13 @@ router.put("/user/batch-time", requireAuth("student"), updateMyBatchTime);
 // ==============================
 router.get("/users", requireAuth(...ADMIN), getAllUsers);
 router.get("/admin/all-students", auth(...ADMIN), getAllUsers);
+router.get("/admin/student/:id", auth(...ADMIN), getStudentById); // one student (live Student Control screen)
 router.put("/update-access", requireAuth(...ADMIN), updateUserAccess);
 router.put("/admin/update-student-status", requireAuth(...ADMIN), updateStudentStatus);
 router.delete("/users/:id", requireAuth(), deleteUser); // students: self only (checked inside)
 router.get("/admin/users-by-stage", auth(...STAFF), getUsersByStage);
 router.get("/admin/teachers", auth(...ADMIN), getAllTeachersFiltered);
+router.get("/admin/class-load", auth(...ADMIN), getClassLoad); // students per stage / section / timing
 
 // ==============================
 //        NOTIFICATIONS
@@ -96,13 +104,25 @@ router.get("/user/my-attendance", auth(), getMyAttendance);
 router.get("/admin/trainer-roster", auth(...STAFF), getTrainerClassroomRoster);
 router.get("/admin/attendance", auth(...STAFF), getAttendanceSheet);
 router.get("/admin/batch-visitors", auth(...STAFF), getBatchVisitors); // joined outside own batch
+router.get("/admin/batch-summary", auth(...STAFF), getBatchSummary); // per-timing present/late/absent/other
 router.post("/admin/auto-absent", requireAuth("admin"), autoMarkAbsent);
+router.get("/admin/trainer-attendance", auth(...STAFF), getTrainerAttendance); // morning + afternoon per trainer
+
+// ==============================
+//        🏖 HOLIDAYS
+// ==============================
+router.get("/admin/holidays", auth(), listHolidays); // apps may show "Tomorrow: Dasara holiday"
+router.post("/admin/holidays", requireAuth(...ADMIN), addHolidays);
+router.delete("/admin/holidays/:id", requireAuth(...ADMIN), removeHoliday);
+router.get("/attendance-rules", (req, res) => res.status(200).json(require("../../utils/attendanceRules").rulesSummary()));
 
 // Monthly calendar + yearly graph. Admin/manager: any ?userId=. Others: own report only.
 router.get("/attendance-report", requireAuth(), getAttendanceReport);
 
 // Best trainer / best student of the month or year (everyone logged in; phones only for admins)
 router.get("/leaderboard", requireAuth(), getLeaderboard);
+router.get("/leaderboard/ratings", requireAuth(), getRatingLeaderboard); // ⭐ top rated (practice stars)
+router.get("/leaderboard/best-students", requireAuth(), getBestStudents); // 🏆 best student per class + per language
 
 // ==============================
 //        FEEDBACK

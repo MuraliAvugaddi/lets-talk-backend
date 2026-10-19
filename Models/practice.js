@@ -8,11 +8,17 @@ const practiceSchema = new mongoose.Schema(
     userName: { type: String, default: "" },
     language: { type: String, enum: ["English", "Hindi"], required: true },
     stage: { type: String, required: true }, // "stage1" ... "stage7"
-    section: { type: String, default: "" }, // "A" / "B" ... ("" for Hindi)
+    section: { type: String, default: "" }, // the STUDENT's own section "A" / "B" ... ("" for Hindi)
+    hostSection: { type: String, default: "" }, // set when practiced in another section's class (merge day)
     date: { type: String, required: true }, // DD-MM-YYYY (IST)
     trainerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     trainerName: { type: String, default: "" },
     practicedAt: { type: Date, default: Date.now },
+
+    // ⭐ Trainer's rating of this practice (1–5), 0 = not rated yet
+    rating: { type: Number, min: 0, max: 5, default: 0 },
+    note: { type: String, default: "" }, // e.g. "Good pronunciation, needs confidence"
+    tags: { type: [String], default: [] }, // quick picks: Fluency, Pronunciation, Grammar, Confidence
   },
   { timestamps: true }
 );
