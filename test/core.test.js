@@ -528,3 +528,11 @@ test("best student: class keys, score and ranking", () => {
   assert.equal(v.me.name, "Ramesh");
   assert.equal(v.winner.phone, undefined); // phones only for admins
 });
+
+test("app version: minimum never above latest, only https store links", () => {
+  const { _internal: v } = require("../Controllers/UserContollers/appVersionController");
+  const out = v.clean({ latestBuild: "6", minimumBuild: 9, versionName: "1.0.1", storeUrl: "javascript:alert(1)" }, v.DEFAULTS.android);
+  assert.equal(out.latestBuild, 6);
+  assert.equal(out.minimumBuild, 6);
+  assert.match(out.storeUrl, /^https:\/\/play\.google\.com/);
+});

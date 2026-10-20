@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { listHolidays, addHolidays, removeHoliday } = require("../../Controllers/UserContollers/holidayController");
+const { getAppVersion, setAppVersion } = require("../../Controllers/UserContollers/appVersionController");
 
 const {
   registerUser,
@@ -114,6 +115,12 @@ router.get("/admin/trainer-attendance", auth(...STAFF), getTrainerAttendance); /
 router.get("/admin/holidays", auth(), listHolidays); // apps may show "Tomorrow: Dasara holiday"
 router.post("/admin/holidays", requireAuth(...ADMIN), addHolidays);
 router.delete("/admin/holidays/:id", requireAuth(...ADMIN), removeHoliday);
+// ==============================
+//        📲 APP UPDATE MESSAGE
+// ==============================
+router.get("/app-version", getAppVersion);
+router.put("/admin/app-version", requireAuth(...ADMIN), setAppVersion);
+
 router.get("/attendance-rules", (req, res) => res.status(200).json(require("../../utils/attendanceRules").rulesSummary()));
 
 // Monthly calendar + yearly graph. Admin/manager: any ?userId=. Others: own report only.
