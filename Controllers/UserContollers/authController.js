@@ -2,7 +2,8 @@ const bcrypt = require("bcryptjs");
 const User = require("../../Models/users");
 const FeeHistory = require("../../Models/feeHistory");
 const { signToken, readBearer, resolveUser } = require("../../middleware/authMiddleware");
-const { verifyPhoneIdToken, samePhone } = require("../../utils/firebaseAdmin");
+const { verifyPhoneIdToken, samePhone } = require("../../utils/firebaseAdmin"); // old app versions only
+const { verifyOtpToken } = require("./otpController"); // 🔐 MSG91 OTP
 const { monthKey } = require("../../utils/time");
 const {
   BATCHES,
@@ -109,6 +110,24 @@ const registerUser = async (req, res) => {
 
     const requestedRole = STAFF_ROLES.includes(role) ? role : "student";
 
+    // 🔐 Students prove the phone number with the MSG91 OTP (otpToken from /api/otp/verify).
+    // OTP_SIGNUP_REQUIRED=true on Render once the new app is in the stores
+    // (until then, old app versions without an otpToken can still sign up).
+    if (requestedRole === "student") {
+      if (req.body.otpToken) {
+        try {
+          const verified = verifyOtpToken(req.body.otpToken, "signup");
+          if (verified !== phone) {
+            return res.status(403).json({ message: "This phone number was not verified. Please verify the OTP again." });
+          }
+        } catch (e) {
+          return res.status(401).json({ message: "OTP verification expired. Please verify your phone again." });
+        }
+      } else if (process.env.OTP_SIGNUP_REQUIRED === "true") {
+        return res.status(401).json({ message: "Please verify your phone number with the OTP. Update the app if you don't see it." });
+      }
+    }
+
     if (requestedRole !== "student") {
       const token = readBearer(req);
       const { user: creator } = token ? await resolveUser(token) : {};
@@ -198,7 +217,7 @@ const loginUser = async (req, res) => {
 // =====================================================
 const resetPassword = async (req, res) => {
   try {
-    const { newPassword, idToken } = req.body;
+    const { newPassword, idToken, otpToken } = req.body;
     const phone = cleanPhone(req.body.phone);
 
     if (!phone || !newPassword) {
@@ -208,12 +227,13 @@ const resetPassword = async (req, res) => {
       return res.status(400).json({ message: "Password must be at least 6 characters." });
     }
 
+    // 🔐 New app: MSG91 otpToken. Old app versions: Firebase idToken (until everyone updates).
     let verifiedPhone;
     try {
-      verifiedPhone = await verifyPhoneIdToken(idToken);
+      verifiedPhone = otpToken ? verifyOtpToken(otpToken, "reset") : await verifyPhoneIdToken(idToken);
     } catch (e) {
       return res.status(401).json({
-        message: "OTP verification required. Please update the app and verify your phone again.",
+        message: "OTP verification expired. Please verify your phone number again.",
       });
     }
     if (!samePhone(verifiedPhone, phone)) {

@@ -51,7 +51,8 @@ const { getBestStudents } = require("../../Controllers/UserContollers/bestStuden
 const { getClassLoad } = require("../../Controllers/UserContollers/classLoadController");
 
 const { auth, requireAuth } = require("../../middleware/authMiddleware");
-const { loginLimiter, resetLimiter, registerLimiter } = require("../../middleware/rateLimit");
+const { loginLimiter, resetLimiter, registerLimiter, otpLimiter, otpVerifyLimiter } = require("../../middleware/rateLimit");
+const { sendOtp, verifyOtp } = require("../../Controllers/UserContollers/otpController");
 
 // requireAuth  = token always required
 // auth         = token required once ENFORCE_AUTH=true (transition mode before that)
@@ -61,6 +62,9 @@ const STAFF = ["teacher", "manager", "admin"];
 // ==============================
 //        AUTH
 // ==============================
+// 🔐 Phone OTP by SMS (MSG91) — signup + forgot password
+router.post("/otp/send", otpLimiter, sendOtp);
+router.post("/otp/verify", otpVerifyLimiter, verifyOtp);
 router.post("/register", registerLimiter, registerUser); // staff roles need an admin token (checked inside)
 router.post("/login", loginLimiter, loginUser);
 router.post("/reset-password", resetLimiter, resetPassword); // needs Firebase OTP idToken
