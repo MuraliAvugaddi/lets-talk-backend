@@ -5,6 +5,7 @@ const { getModes } = require("../../utils/classMode");
 const { ensureUser, addMember } = require("../../utils/streamBatch");
 const { dateKey } = require("../../utils/time");
 const { effectiveSection } = require("./sectionMergeController");
+const lk = require("../../utils/livekit");
 
 // Keys come ONLY from environment variables. The old secret was public on
 // GitHub — rotate it in the Stream dashboard and put the new one on Render.
@@ -13,6 +14,49 @@ let cachedClient = null;
 // 🎙 Special class: is the admin's call live? (so 2,500 waiting students don't each ask Stream)
 const assemblyLive = new Map(); // callId → { live, at }
 const ASSEMBLY_CACHE_MS = 30000;
+
+// ⚡ NORMAL CLASSES: is this call live? — remembered for a few seconds.
+// Stream allows only ~1,000 "get call" requests per minute for the WHOLE app.
+// Without this, 2,000 students joining at 5:30 (and the 30-second section check
+// every phone makes in class) would ask Stream thousands of times a minute →
+// "Could not prepare the class" errors. With it: ~1 request per class per 10 s.
+const callState = new Map(); // callId → { started, ended, custom, at }
+const callInflight = new Map(); // callId → Promise (many students at once → ONE Stream request)
+const LIVE_TTL_MS = 10000; // class is live → re-check after 10 s
+const WAIT_TTL_MS = 4000; // not started yet → re-check after 4 s (trainer start clears it at once)
+
+const readCallState = async (call, callId) => {
+  const c = callState.get(callId);
+  if (c && Date.now() - c.at < (c.started ? LIVE_TTL_MS : WAIT_TTL_MS)) return c;
+  if (callInflight.has(callId)) return callInflight.get(callId);
+  const p = (async () => {
+    try {
+      const r = await call.get();
+      const ended = !!(r.call && r.call.ended_at);
+      const state = { started: !ended, ended, custom: (r.call && r.call.custom) || {}, at: Date.now() };
+      callState.set(callId, state);
+      return state;
+    } catch (e) {
+      const status = e && e.metadata ? e.metadata.responseCode : null;
+      if (status === 404 || (e && e.code === 16)) {
+        const state = { started: false, ended: false, custom: {}, at: Date.now() };
+        callState.set(callId, state);
+        return state;
+      }
+      throw e;
+    } finally {
+      callInflight.delete(callId);
+    }
+  })();
+  callInflight.set(callId, p);
+  return p;
+};
+
+// keep memory small (call ids contain the date, old ones are never asked again)
+setInterval(() => {
+  const old = Date.now() - 10 * 60 * 1000;
+  for (const [k, v] of callState) if (v.at < old) callState.delete(k);
+}, 5 * 60 * 1000).unref();
 const getStreamClient = () => {
   if (!cachedClient) {
     const { STREAM_API_KEY, STREAM_API_SECRET } = process.env;
@@ -97,6 +141,16 @@ const withoutNulls = (obj) =>
   Object.fromEntries(Object.entries(obj || {}).filter(([, v]) => v !== null && v !== undefined));
 
 const prepareCall = async (req, res) => {
+  // 🎧 New apps call /api/rtc/prepare-call (LiveKit). Once the institute has moved
+  // to LiveKit, old app versions (Stream) must update — otherwise the trainer and
+  // the students would sit in two different systems.
+  const rtc = req.rtc === "livekit" ? "livekit" : "stream";
+  if (rtc === "stream" && lk.provider() === "livekit") {
+    return res.status(426).json({ error: "Please update the Let's Speak app to join classes.", update: true });
+  }
+  if (rtc === "livekit" && lk.provider() !== "livekit") {
+    return res.status(503).json({ error: "Classes are not available in this app version yet. Please try again later." });
+  }
   try {
     let user = req.user;
     if (!user) {
@@ -129,7 +183,7 @@ const prepareCall = async (req, res) => {
       const extra = { assembly: true, title: modes.assembly.title, startTime: modes.assembly.startTime };
       const assemblyId = buildAssemblyCallId(modes.assembly);
       if (isAdmin) {
-        const ok = await hostCall(res, user, assemblyId, { ...extra, host: true });
+        const ok = await hostCall(res, user, assemblyId, { ...extra, host: true }, rtc);
         if (ok) {
           assemblyLive.set(assemblyId, { live: true, at: Date.now() });
           // everyone waiting on the "not started yet" screen joins right away
@@ -137,7 +191,7 @@ const prepareCall = async (req, res) => {
         }
         return;
       }
-      return joinAsMember(res, user, assemblyId, extra);
+      return joinAsMember(res, user, assemblyId, extra, rtc);
     }
 
     // While the principal class is on, normal classes are paused
@@ -188,14 +242,14 @@ const prepareCall = async (req, res) => {
       : buildCallId({ language, stage, section, type });
 
     if (STAFF_ROLES.includes(user.role)) {
-      const ok = await hostCall(res, user, callId, { rain });
+      const ok = await hostCall(res, user, callId, { rain }, rtc);
       // students waiting to move into this class (merge / unmerge) join now
       if (ok && req.io && type === "class") {
         req.io.emit("class_started", { language, stage, section: String(section || "").toUpperCase(), callId, at: Date.now() });
       }
       return;
     }
-    return joinAsMember(res, user, callId, { rain, ...merge });
+    return joinAsMember(res, user, callId, { rain, ...merge }, rtc);
   } catch (error) {
     console.error("Prepare call error:", error);
     res.status(502).json({ error: (error && error.message) || "Could not prepare the class" });
@@ -203,7 +257,18 @@ const prepareCall = async (req, res) => {
 };
 
 // Trainer / admin starts (or returns to) a call
-const hostCall = async (res, user, callId, extra = {}) => {
+const hostCall = async (res, user, callId, extra = {}, rtc = "stream") => {
+  if (rtc === "livekit") {
+    try {
+      await lk.openRoom(callId); // fresh classroom: mics open, no practice
+      res.status(200).json({ callId, started: true, rtc: "livekit", ...extra });
+      return true;
+    } catch (error) {
+      console.error("LiveKit host error:", error);
+      res.status(502).json({ error: (error && error.message) || "Could not start the class" });
+      return false;
+    }
+  }
   try {
     const client = getStreamClient();
     const call = client.video.call("default", callId);
@@ -222,6 +287,7 @@ const hostCall = async (res, user, callId, extra = {}) => {
       if (r.call && r.call.custom && Object.keys(r.call.custom).length) {
         await call.update({ custom: {} }).catch((e) => console.error("Reset custom error:", e.message));
       }
+      callState.set(callId, { started: true, ended: false, custom: {}, at: Date.now() }); // students join at once
       res.status(200).json({ callId, started: true, ...extra });
       return true;
     }
@@ -233,7 +299,17 @@ const hostCall = async (res, user, callId, extra = {}) => {
 };
 
 // Students (and trainers in the principal class) may only join a call that is already live
-const joinAsMember = async (res, user, callId, extra = {}) => {
+const joinAsMember = async (res, user, callId, extra = {}, rtc = "stream") => {
+  if (rtc === "livekit") {
+    try {
+      const started = await lk.isRoomLive(callId); // cached: 2,000 students = 1 request
+      if (extra.assembly) assemblyLive.set(callId, { live: started, at: Date.now() });
+      return res.status(200).json({ callId, started, rtc: "livekit", ...extra });
+    } catch (error) {
+      console.error("LiveKit join check error:", error);
+      return res.status(502).json({ error: (error && error.message) || "Could not prepare the class" });
+    }
+  }
   try {
     const client = getStreamClient();
     const call = client.video.call("default", callId);
@@ -246,19 +322,17 @@ const joinAsMember = async (res, user, callId, extra = {}) => {
     if (cacheFresh && !cached.live) return res.status(200).json({ callId, started: false, ...extra });
 
     let ended = false;
-    if (!(cacheFresh && cached.live)) try {
-      const r = await call.get();
-      ended = !!(r.call && r.call.ended_at);
-      if (!ended && r.call && hasNull(r.call.custom)) {
-        await call.update({ custom: withoutNulls(r.call.custom) }).catch((e) => console.error("Clean custom error:", e.message));
-      }
-    } catch (e) {
-      const status = e && e.metadata ? e.metadata.responseCode : null;
-      if (status === 404 || (e && e.code === 16)) {
+    if (!(cacheFresh && cached.live)) {
+      const st = await readCallState(call, callId); // cached + shared: not one Stream request per student
+      if (!st.started && !st.ended) {
         if (extra.assembly) assemblyLive.set(callId, { live: false, at: Date.now() });
         return res.status(200).json({ callId, started: false, ...extra });
       }
-      throw e;
+      ended = st.ended;
+      if (!ended && hasNull(st.custom)) {
+        st.custom = withoutNulls(st.custom); // clean once, not by every student
+        await call.update({ custom: st.custom }).catch((e) => console.error("Clean custom error:", e.message));
+      }
     }
     if (extra.assembly && !(cacheFresh && cached.live)) assemblyLive.set(callId, { live: !ended, at: Date.now() });
     if (ended) return res.status(200).json({ callId, started: false, ...extra });
@@ -275,11 +349,14 @@ const joinAsMember = async (res, user, callId, extra = {}) => {
   }
 };
 
-const forgetAssembly = () => assemblyLive.clear();
+const forgetAssembly = () => {
+  assemblyLive.clear();
+  for (const k of callState.keys()) if (k.startsWith("assembly_")) callState.delete(k);
+};
 
 module.exports = {
   getStreamToken,
   prepareCall,
   forgetAssembly,
-  _internal: { buildCallId, buildOfflineCallId, buildAssemblyCallId, assemblyLive },
+  _internal: { buildCallId, buildOfflineCallId, buildAssemblyCallId, assemblyLive, callState, readCallState },
 };

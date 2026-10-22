@@ -368,6 +368,13 @@ const joinOnlineClass = async (req, res) => {
       joinedBatch,
     });
   } catch (error) {
+    // Two joins in the same instant (double tap / reconnect) → the 2nd create hits the
+    // unique index. Try once more: it now finds the record and updates it, instead of
+    // failing — a failed join meant the app never counted that student's minutes.
+    if (error && error.code === 11000 && !req._joinRetry && !res.headersSent) {
+      req._joinRetry = true;
+      return joinOnlineClass(req, res);
+    }
     console.error("Join Online Class Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
@@ -1051,15 +1058,20 @@ const getTrainerClassroomRoster = async (req, res) => {
     studentQuery.createdAt = { $lte: end };
 
     const holidayStudents = await holidayFor(date, "student");
-    const [students, records, practice] = await Promise.all([
+    // Trainers refresh this every 10 s → load only THIS class's records
+    // (not every section's records of the stage).
+    const [students, practice] = await Promise.all([
       User.find(studentQuery).select("-password -sessionToken").lean(),
-      Attendance.find({
-        date: { $in: legacyDateVariants(date) },
-        stage: { $in: stageVariants(stage) },
-        language,
-      }).lean(),
       practiceIndex({ date, language, stage }),
     ]);
+    const records = students.length
+      ? await Attendance.find({
+          userId: { $in: students.map((s) => s._id) },
+          date: { $in: legacyDateVariants(date) },
+          stage: { $in: stageVariants(stage) },
+          language,
+        }).lean()
+      : [];
 
     const recordByUser = new Map();
     for (const r of records) {

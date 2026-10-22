@@ -8,6 +8,7 @@ const { Server } = require("socket.io");
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const cors = require("cors");
+const compression = require("compression");
 const cron = require("node-cron");
 
 dotenv.config();
@@ -28,6 +29,7 @@ try {
 if (!process.env.STREAM_API_KEY || !process.env.STREAM_API_SECRET) {
   console.warn("⚠️ STREAM_API_KEY / STREAM_API_SECRET not set — live classes will fail to get tokens");
 }
+console.log(`🎧 Live classes: ${String(process.env.LIVE_PROVIDER || "stream").toLowerCase() === "livekit" ? "LiveKit (own server)" : "Stream"}`);
 console.log(`🔐 ENFORCE_AUTH = ${process.env.ENFORCE_AUTH === "true" ? "ON" : "OFF (transition mode)"}`);
 
 // =====================================================
@@ -42,6 +44,7 @@ const feeRoutes = require("./Routes/UserRoutes/feeRoute");
 const practiceRoutes = require("./Routes/UserRoutes/practiceRoute");
 const promoRoutes = require("./Routes/UserRoutes/promoRoute");
 const classModeRoutes = require("./Routes/UserRoutes/classModeRoute");
+const rtcRoutes = require("./Routes/UserRoutes/rtcRoute");
 
 const { autoMarkAbsent } = require("./Controllers/UserContollers/attendanceController");
 const { resetMonthlyFeesForNewMonth } = require("./Controllers/UserContollers/authController");
@@ -64,6 +67,8 @@ const io = new Server(server, {
 });
 
 app.use(cors({ origin: corsOrigin }));
+// gzip: the admin's 2,500-student list is ~10x smaller (3 MB → ~300 KB). Apps unzip it automatically.
+app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: "1mb" }));
 
 app.use((req, res, next) => {
@@ -83,6 +88,7 @@ app.use("/api/fee", feeRoutes);
 app.use("/api/practice", practiceRoutes);
 app.use("/api/promo", promoRoutes); // posters & reels on the student home screen
 app.use("/api/class-mode", classModeRoutes); // 🌧 rain day / 🎙 principal class
+app.use("/api/rtc", rtcRoutes); // 🎧 LiveKit audio classes (own server)
 
 app.get("/", (req, res) => {
   res.status(200).json({

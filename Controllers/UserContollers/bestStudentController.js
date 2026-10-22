@@ -83,7 +83,8 @@ const trainerClassKey = (u) => {
 };
 
 let cache = { key: "", at: 0, data: null };
-const CACHE_MS = 60 * 1000;
+const CACHE_MS = 2 * 60 * 1000;
+const computing = new Map(); // month → Promise (in progress)
 
 const computeMonth = async (year, month) => {
   const now = istParts(new Date());
@@ -260,7 +261,12 @@ const getBestStudents = async (req, res) => {
 
     const ck = `${year}-${month}`;
     if (cache.key !== ck || Date.now() - cache.at > CACHE_MS || req.query.fresh === "1") {
-      cache = { key: ck, at: Date.now(), data: await computeMonth(year, month) };
+      // many students at once → ONE computation (the others wait for the same result)
+      if (!computing.has(ck)) {
+        computing.set(ck, computeMonth(year, month).finally(() => computing.delete(ck)));
+      }
+      const data = await computing.get(ck);
+      cache = { key: ck, at: Date.now(), data };
     }
     const { classes, overall } = cache.data;
 

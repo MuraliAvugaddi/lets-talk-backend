@@ -5,6 +5,7 @@ const Practice = require("../../Models/practice");
 const Result = require("../../Models/result");
 const { istParts, istDayRange } = require("../../utils/time");
 const { ADMIN_ROLES, STAFF_ROLES } = require("../../utils/normalize");
+const { memo } = require("../../utils/memo");
 
 // =====================================================
 // LEADERBOARD — best trainer / best student of the month or year
@@ -109,130 +110,132 @@ const getLeaderboard = async (req, res) => {
       keyOf(Math.floor(periodEndNum / 10000), Math.floor((periodEndNum % 10000) / 100), periodEndNum % 100)
     );
 
-    const roles = role === "teacher" ? STAFF_ROLES.filter((r) => r === "teacher") : ["student"];
-    const users = await User.find({ role: { $in: roles }, createdAt: { $lte: end } })
-      .select("name phone mode language teacherStage createdAt")
-      .lean();
-    if (!users.length) {
-      return res.status(200).json({ role, period, year, month, periodLabel, winner: null, ranking: [], me: null });
-    }
+    const isAdmin = ADMIN_ROLES.includes(req.user.role);
+    // ⚡ same answer for everyone for 2 minutes (heavy: a whole month/year of attendance)
+    const people = await memo(`lb|${role}|${period}|${year}|${month}|${periodEndNum}|${isAdmin}`, 2 * 60 * 1000, async () => {
+      const roles = role === "teacher" ? STAFF_ROLES.filter((r) => r === "teacher") : ["student"];
+      const users = await User.find({ role: { $in: roles }, createdAt: { $lte: end } })
+        .select("name phone mode language teacherStage createdAt")
+        .lean();
+      if (!users.length) return [];
 
-    const stats = await Attendance.aggregate([
-      {
-        $match: {
-          userId: { $in: users.map((u) => new mongoose.Types.ObjectId(String(u._id))) },
-          createdAt: { $gte: start, $lte: end },
-          status: { $in: ["Present", "Late", "Partial"] },
+      const stats = await Attendance.aggregate([
+        {
+          $match: {
+            userId: { $in: users.map((u) => new mongoose.Types.ObjectId(String(u._id))) },
+            createdAt: { $gte: start, $lte: end },
+            status: { $in: ["Present", "Late", "Partial"] },
+          },
         },
-      },
-      {
-        $group: {
-          _id: { u: "$userId", d: "$date" },
-          best: {
-            $max: {
-              $switch: {
-                branches: [
-                  { case: { $eq: ["$status", "Present"] }, then: 3 },
-                  { case: { $eq: ["$status", "Late"] }, then: 2 },
-                ],
-                default: 1,
+        {
+          $group: {
+            _id: { u: "$userId", d: "$date" },
+            best: {
+              $max: {
+                $switch: {
+                  branches: [
+                    { case: { $eq: ["$status", "Present"] }, then: 3 },
+                    { case: { $eq: ["$status", "Late"] }, then: 2 },
+                  ],
+                  default: 1,
+                },
               },
             },
+            minutes: { $sum: { $ifNull: ["$totalMinutesSpent", 0] } },
           },
-          minutes: { $sum: { $ifNull: ["$totalMinutesSpent", 0] } },
         },
-      },
-      {
-        $group: {
-          _id: "$_id.u",
-          present: { $sum: { $cond: [{ $eq: ["$best", 3] }, 1, 0] } },
-          late: { $sum: { $cond: [{ $eq: ["$best", 2] }, 1, 0] } },
-          partial: { $sum: { $cond: [{ $eq: ["$best", 1] }, 1, 0] } },
-          minutes: { $sum: "$minutes" },
+        {
+          $group: {
+            _id: "$_id.u",
+            present: { $sum: { $cond: [{ $eq: ["$best", 3] }, 1, 0] } },
+            late: { $sum: { $cond: [{ $eq: ["$best", 2] }, 1, 0] } },
+            partial: { $sum: { $cond: [{ $eq: ["$best", 1] }, 1, 0] } },
+            minutes: { $sum: "$minutes" },
+          },
         },
-      },
-    ]);
-    const statMap = new Map(stats.map((s) => [String(s._id), s]));
-
-    let practiceMap = new Map();
-    let testMap = new Map();
-    if (role === "student") {
-      const ids = users.map((u) => new mongoose.Types.ObjectId(String(u._id)));
-      const [practiceStats, testStats] = await Promise.all([
-        Practice.aggregate([
-          { $match: { userId: { $in: ids }, practicedAt: { $gte: start, $lte: end } } },
-          {
-            $group: {
-              _id: "$userId",
-              count: { $sum: 1 },
-              rated: { $sum: { $cond: [{ $gt: ["$rating", 0] }, 1, 0] } },
-              ratingSum: { $sum: { $cond: [{ $gt: ["$rating", 0] }, "$rating", 0] } },
-            },
-          },
-        ]),
-        Result.aggregate([
-          { $match: { userId: { $in: ids }, completedAt: { $gte: start, $lte: end }, totalQuestions: { $gt: 0 } } },
-          {
-            $group: {
-              _id: "$userId",
-              count: { $sum: 1 },
-              pct: { $avg: { $multiply: [{ $divide: ["$score", "$totalQuestions"] }, 100] } },
-            },
-          },
-        ]),
       ]);
-      practiceMap = new Map(practiceStats.map((p) => [String(p._id), p]));
-      testMap = new Map(testStats.map((t) => [String(t._id), t]));
-    }
+      const statMap = new Map(stats.map((s) => [String(s._id), s]));
 
-    const isAdmin = ADMIN_ROLES.includes(req.user.role);
-    const people = [];
-    for (const u of users) {
-      const j = istParts(u.createdAt || new Date(0));
-      const joinedNum = j.year * 10000 + j.month * 100 + j.day;
-      const workingDays = countWorkingDays(Math.max(periodStartNum, joinedNum), periodEndNum);
-      if (workingDays < MIN_WORKING_DAYS) continue;
-
-      const s = statMap.get(String(u._id)) || { present: 0, late: 0, partial: 0, minutes: 0 };
-      const attended = Math.min(s.present + s.late + s.partial, workingDays);
-      people.push({
-        userId: u._id,
-        name: u.name,
-        phone: isAdmin ? u.phone : undefined,
-        mode: u.mode,
-        language: u.language,
-        stage: role === "teacher" ? u.teacherStage : undefined,
-        present: s.present,
-        late: s.late,
-        partial: s.partial,
-        absent: Math.max(workingDays - attended, 0),
-        attended,
-        workingDays,
-        minutes: s.minutes,
-        hours: Math.round((s.minutes / 60) * 10) / 10,
-        percentage: Math.round((attended / workingDays) * 100),
-      });
-
+      let practiceMap = new Map();
+      let testMap = new Map();
       if (role === "student") {
-        const p = people[people.length - 1];
-        const pr = practiceMap.get(String(u._id)) || { count: 0, rated: 0, ratingSum: 0 };
-        const tr = testMap.get(String(u._id)) || { count: 0, pct: 0 };
-        p.practiceCount = pr.count;
-        p.practiceAvg = pr.rated ? Math.round((pr.ratingSum / pr.rated) * 10) / 10 : 0;
-        p.testCount = tr.count;
-        p.testAvg = tr.count ? Math.round(tr.pct) : 0;
-        p.score = overallScore({
-          percentage: p.percentage,
-          practicePct: (p.practiceAvg / 5) * 100,
-          testPct: p.testAvg,
-        });
+        const ids = users.map((u) => new mongoose.Types.ObjectId(String(u._id)));
+        const [practiceStats, testStats] = await Promise.all([
+          Practice.aggregate([
+            { $match: { userId: { $in: ids }, practicedAt: { $gte: start, $lte: end } } },
+            {
+              $group: {
+                _id: "$userId",
+                count: { $sum: 1 },
+                rated: { $sum: { $cond: [{ $gt: ["$rating", 0] }, 1, 0] } },
+                ratingSum: { $sum: { $cond: [{ $gt: ["$rating", 0] }, "$rating", 0] } },
+              },
+            },
+          ]),
+          Result.aggregate([
+            { $match: { userId: { $in: ids }, completedAt: { $gte: start, $lte: end }, totalQuestions: { $gt: 0 } } },
+            {
+              $group: {
+                _id: "$userId",
+                count: { $sum: 1 },
+                pct: { $avg: { $multiply: [{ $divide: ["$score", "$totalQuestions"] }, 100] } },
+              },
+            },
+          ]),
+        ]);
+        practiceMap = new Map(practiceStats.map((p) => [String(p._id), p]));
+        testMap = new Map(testStats.map((t) => [String(t._id), t]));
       }
-    }
 
-    if (role === "student") rankStudents(people);
-    else rankPeople(people);
-    people.forEach((p, i) => {
-      p.rank = i + 1;
+          const people = [];
+      for (const u of users) {
+        const j = istParts(u.createdAt || new Date(0));
+        const joinedNum = j.year * 10000 + j.month * 100 + j.day;
+        const workingDays = countWorkingDays(Math.max(periodStartNum, joinedNum), periodEndNum);
+        if (workingDays < MIN_WORKING_DAYS) continue;
+
+        const s = statMap.get(String(u._id)) || { present: 0, late: 0, partial: 0, minutes: 0 };
+        const attended = Math.min(s.present + s.late + s.partial, workingDays);
+        people.push({
+          userId: u._id,
+          name: u.name,
+          phone: isAdmin ? u.phone : undefined,
+          mode: u.mode,
+          language: u.language,
+          stage: role === "teacher" ? u.teacherStage : undefined,
+          present: s.present,
+          late: s.late,
+          partial: s.partial,
+          absent: Math.max(workingDays - attended, 0),
+          attended,
+          workingDays,
+          minutes: s.minutes,
+          hours: Math.round((s.minutes / 60) * 10) / 10,
+          percentage: Math.round((attended / workingDays) * 100),
+        });
+
+        if (role === "student") {
+          const p = people[people.length - 1];
+          const pr = practiceMap.get(String(u._id)) || { count: 0, rated: 0, ratingSum: 0 };
+          const tr = testMap.get(String(u._id)) || { count: 0, pct: 0 };
+          p.practiceCount = pr.count;
+          p.practiceAvg = pr.rated ? Math.round((pr.ratingSum / pr.rated) * 10) / 10 : 0;
+          p.testCount = tr.count;
+          p.testAvg = tr.count ? Math.round(tr.pct) : 0;
+          p.score = overallScore({
+            percentage: p.percentage,
+            practicePct: (p.practiceAvg / 5) * 100,
+            testPct: p.testAvg,
+          });
+        }
+      }
+
+      if (role === "student") rankStudents(people);
+      else rankPeople(people);
+      people.forEach((p, i) => {
+        p.rank = i + 1;
+      });
+      return people;
     });
 
     const meIdx = people.findIndex((p) => String(p.userId) === String(req.user._id));

@@ -399,6 +399,12 @@ const updateUserAccess = async (req, res) => {
     if (hindi) user.hindiAccess = hindi;
     if (normMode(mode)) user.mode = normMode(mode);
     if (onlineSection) user.onlineSection = normSection(onlineSection);
+    // Admin app sends access + timings together, so the clash check sees the NEW timings
+    if (req.body.batchTime !== undefined) {
+      const batch = normBatch(req.body.batchTime);
+      if (req.body.batchTime && !batch) return res.status(400).json({ message: "Invalid batch timing" });
+      user.batchTime = batch || "";
+    }
 
     const clash = applyStageBatches(user, req.body);
     if (clash) return res.status(409).json({ message: clash });
