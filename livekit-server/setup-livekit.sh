@@ -38,7 +38,6 @@ if command -v ufw >/dev/null 2>&1; then
   ufw allow 80/tcp
   ufw allow 443/tcp
   ufw allow 7881/tcp
-  ufw allow 3478/udp
   ufw allow 50000:60000/udp
   ufw --force enable
 fi
@@ -64,12 +63,15 @@ rtc:
   use_external_ip: true
 room:
   auto_create: false          # only a trainer (through our server) can start a class
+  max_participants: 0         # no limit (principal class = everyone in one room)
   empty_timeout: 900
   departure_timeout: 300
+# TURN is off: it needs its own TLS certificate setup. Students on networks that
+# block UDP still connect over TCP port 7881 (rtc.tcp_port above).
 turn:
-  enabled: true               # helps students on strict networks
-  domain: ${DOMAIN}
-  udp_port: 3478
+  enabled: false
+audio:
+  update_interval: 1000       # "who is speaking" sent once a second (less traffic in a 2,000-person room)
 keys:
   ${KEY}: ${SECRET}
 logging:
@@ -85,7 +87,7 @@ CADDY
 cat > docker-compose.yaml <<'COMPOSE'
 services:
   livekit:
-    image: livekit/livekit-server:latest
+    image: livekit/livekit-server:v1.13.10   # tested version (update on purpose, not by surprise)
     command: --config /etc/livekit.yaml
     restart: unless-stopped
     network_mode: host
