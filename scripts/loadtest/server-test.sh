@@ -19,7 +19,17 @@ TEST_URI="mongodb://${MONGO_USER}:${MONGO_PASS}@letsspeak-mongo:27017/lets_talk_
 cleanup() {
   echo "🧹 Cleaning up…"
   docker exec lt-api node scripts/loadtest/cleanup.js 2>/dev/null || true
+  # 🔬 stop the test backend gently so it writes its CPU profile, then show the top of it
+  docker exec lt-api sh -c 'kill -INT 1' 2>/dev/null || true
+  sleep 4
+  docker cp lt-api:/tmp/prof /tmp/lt-prof >/dev/null 2>&1 || true
   docker rm -f lt-api >/dev/null 2>&1 || true
+  PROF=$(ls -t /tmp/lt-prof/*.cpuprofile 2>/dev/null | head -1 || true)
+  if [ -n "$PROF" ]; then
+    docker run --rm -v /opt/letsspeak/app:/app:ro -v /tmp/lt-prof:/prof:ro -w /app node:22-bookworm-slim \
+      node scripts/loadtest/profile-top.js "/prof/$(basename "$PROF")" || true
+    rm -rf /tmp/lt-prof
+  fi
 }
 trap cleanup EXIT
 
@@ -36,7 +46,7 @@ docker run -d --name lt-api --network letsspeak_db \
   -e FIREBASE_SERVICE_ACCOUNT_BASE64= -e FIREBASE_PROJECT_ID= -e MC_PASSWORD= -e MSG91_AUTH_KEY= \
   -e ENFORCE_AUTH=true -e ENFORCE_BATCH_WINDOW=false \
   -e ACCOUNTS_FILE=/tmp/accounts.json \
-  node:22-bookworm-slim sh -c "node scripts/loadtest/livekit-stub.js >/dev/null & exec node index.js" >/dev/null
+  node:22-bookworm-slim sh -c "node scripts/loadtest/livekit-stub.js >/dev/null & exec node --cpu-prof --cpu-prof-dir=/tmp/prof index.js" >/dev/null
 sleep 8
 docker logs lt-api 2>&1 | tail -4
 
@@ -47,6 +57,13 @@ docker exec lt-api node scripts/loadtest/seed.js "$N"
 vmstat 2 > /tmp/lt-vmstat.txt &
 VMSTAT_PID=$!
 ( sleep 45; echo; echo "📦 Containers 45 s into the test:"; docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" ) &
+
+echo "▶ Speed of ONE request when the server is quiet (should be a few ms):"
+docker exec lt-api node -e '
+const http=require("http");const a=JSON.parse(require("fs").readFileSync("/tmp/accounts.json"));
+const s=a.find(x=>x.role==="student");const ag=new http.Agent({keepAlive:true,maxSockets:1});
+const one=(p)=>new Promise(r=>{const t=process.hrtime.bigint();http.get("http://127.0.0.1:5099"+p,{agent:ag,headers:{Authorization:"Bearer "+s.token}},res=>{res.resume();res.on("end",()=>r(Number(process.hrtime.bigint()-t)/1e6))}).on("error",()=>r(-1))});
+(async()=>{for(const p of ["/","/api/class-mode","/api/user/my-attendance?userId="+s.id]){const ms=[];for(let i=0;i<200;i++)ms.push(await one(p));ms.sort((x,y)=>x-y);console.log("   "+p.split("?")[0].padEnd(28)+" typical "+ms[100].toFixed(1)+" ms")}process.exit(0)})()' || true
 
 echo "▶ Running the test (about 5 minutes)…"
 # MAX_SOCKETS=200: like Caddy, which keeps a small set of connections to the backend

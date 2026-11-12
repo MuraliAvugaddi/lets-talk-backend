@@ -26,9 +26,19 @@ const STAGES = ["stage1", "stage2", "stage3"];
     process.exit(1);
   }
   await mongoose.connect(uri);
-  await User.syncIndexes();
   await mongoose.connection.db.dropDatabase(); // fresh start every run
-  await User.syncIndexes();
+
+  // ⚠️ dropping the database also drops every index → build them again for ALL
+  // collections (attendance, tests, …), exactly like the real database has them.
+  // Without this the test runs on a database with no indexes and looks very slow.
+  const modelsDir = path.join(__dirname, "../../Models");
+  for (const f of fs.readdirSync(modelsDir).filter((x) => x.endsWith(".js"))) {
+    try {
+      require(path.join(modelsDir, f));
+    } catch (_) {} // an old duplicate model file — the first one already counts
+  }
+  for (const name of mongoose.modelNames()) await mongoose.model(name).syncIndexes();
+  console.log(`🗂  Indexes ready for ${mongoose.modelNames().length} collections`);
 
   const hash = await bcrypt.hash("Test@1234", 10); // same password for all → seeding stays fast
   const access = (stage) => Object.fromEntries([1, 2, 3, 4, 5, 6, 7].map((n) => [`stage${n}`, `stage${n}` === stage]));
