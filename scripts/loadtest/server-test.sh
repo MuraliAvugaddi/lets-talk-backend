@@ -43,5 +43,18 @@ docker logs lt-api 2>&1 | tail -4
 echo "▶ Creating $N test students…"
 docker exec lt-api node scripts/loadtest/seed.js "$N"
 
+# 📈 record CPU use of the whole server during the test (no second window needed)
+vmstat 2 > /tmp/lt-vmstat.txt &
+VMSTAT_PID=$!
+( sleep 45; echo; echo "📦 Containers 45 s into the test:"; docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" ) &
+
 echo "▶ Running the test (about 5 minutes)…"
-docker exec -e BASE=http://127.0.0.1:5099 -e SOCKETS=0 -e MAX_SOCKETS=2000 lt-api node scripts/loadtest/run.js
+# MAX_SOCKETS=200: like Caddy, which keeps a small set of connections to the backend
+docker exec -e BASE=http://127.0.0.1:5099 -e SOCKETS=0 -e MAX_SOCKETS="${MAX_SOCKETS:-200}" lt-api node scripts/loadtest/run.js || true
+
+kill $VMSTAT_PID 2>/dev/null || true
+echo
+echo "📈 Server CPU during the test (%):  user  system  idle  disk-wait  steal"
+awk 'NR>2 && $13 ~ /^[0-9]+$/ { n++; us+=$13; sy+=$14; id+=$15; wa+=$16; st+=$17;
+       if ($15 < minid || n==1) minid=$15; if ($17 > maxst) maxst=$17 }
+     END { if (n) printf "   average:                         %4.0f  %6.0f  %4.0f  %9.0f  %5.0f\n   busiest moment: idle %d%%, worst steal %d%%\n", us/n, sy/n, id/n, wa/n, st/n, minid, maxst }' /tmp/lt-vmstat.txt

@@ -9,6 +9,7 @@
 //   SOCKETS=1          also open one live socket per student (like the app)
 //   ASSEMBLY=1         also test the special class (all students in ~6 s)
 //   ONLY=B             run only the special-class test (ONLY=A → only the normal class)
+//   ASSEMBLY_SPREAD=20 special class: students join over this many seconds (same as the app)
 //
 // Uses scripts/loadtest/accounts.json from seed.js. Prints p50 / p95 / p99 per API.
 // =====================================================================
@@ -226,7 +227,8 @@ const scenarioClass = async () => {
 
 // ---------------- scenario B: special class (everyone in ONE room) ----------------
 const scenarioAssembly = async () => {
-  console.log(`\n▶ Scenario B: special class — ${students.length} students join within ~6 s`);
+  const spread = Number(process.env.ASSEMBLY_SPREAD || 20);
+  console.log(`\n▶ Scenario B: special class — ${students.length} students join within ~${spread} s`);
   await call("POST class-mode/assembly ON", "POST", "/api/class-mode/assembly", admin.token, {
     active: true,
     title: "Load test special class",
@@ -237,7 +239,7 @@ const scenarioAssembly = async () => {
   const t0 = Date.now();
   await Promise.all(
     students.map(async (s) => {
-      await sleep(300 + Math.random() * 6000); // same random spread as the student app
+      await sleep(300 + Math.random() * spread * 1000); // same random spread as the student app
       const prep = await call("POST rtc/prepare-call (assembly)", "POST", "/api/rtc/prepare-call", s.token, { type: "assembly" });
       const room = prep.data && prep.data.callId;
       if (room && prep.data.started) await call("POST rtc/room-token (assembly)", "POST", "/api/rtc/room-token", s.token, { room });

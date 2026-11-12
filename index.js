@@ -54,6 +54,11 @@ const { resetMonthlyFeesForNewMonth } = require("./Controllers/UserContollers/au
 // =====================================================
 const app = express();
 const server = http.createServer(app);
+// 🔌 Keep connections open longer than Caddy does (Caddy reuses them for many
+// students). Node's default (5 s) makes Caddy reconnect again and again and can
+// cause random "502" errors when 2,000 students arrive together.
+server.keepAliveTimeout = 75000;
+server.headersTimeout = 76000;
 
 app.set("trust proxy", 1); // Render sits behind a proxy (needed for correct client IPs / rate limits)
 app.disable("x-powered-by");
@@ -281,7 +286,8 @@ const startServer = async () => {
   try {
     await connectDatabase();
     await runStartupMigrations();
-    server.listen(PORT, "0.0.0.0", () => {
+    // backlog 4096: room for 2,000 phones connecting in the same second (default is only 511)
+    server.listen({ port: Number(PORT), host: "0.0.0.0", backlog: 4096 }, () => {
       console.log(`🚀 Let's Speak backend on port ${PORT} (timezone ${process.env.TZ})`);
     });
   } catch (error) {
