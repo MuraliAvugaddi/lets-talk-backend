@@ -32,7 +32,7 @@ const RESEND_SEC = Number(process.env.OTP_RESEND_SEC || 60);
 const MAX_PER_DAY = Number(process.env.OTP_MAX_PER_DAY || 5);
 const MAX_ATTEMPTS = 5;
 const TOKEN_MIN = 15; // otpToken valid for 15 min (time to finish signup / type new password)
-const PURPOSES = ["signup", "reset"];
+const PURPOSES = ["signup", "reset", "change"]; // change = student changes their phone number
 
 const cleanPhone = (p) => String(p || "").replace(/\D/g, "").slice(-10);
 const phoneCandidates = (p) => {
@@ -49,6 +49,12 @@ const testNumbers = () =>
       .filter(([p, c]) => p && c && /^\d{10}$/.test(cleanPhone(p)) && /^\d{4,8}$/.test(c))
       .map(([p, c]) => [cleanPhone(p), c])
   );
+
+// 🆘 backup sign-up code when the SMS company is down (empty = off)
+const signupFallbackCode = () => {
+  const c = String(process.env.OTP_SIGNUP_FALLBACK_CODE || "").trim();
+  return /^\d{6}$/.test(c) ? c : "";
+};
 
 const hash = (phone, purpose, otp) =>
   crypto.createHmac("sha256", getJwtSecret()).update(`${phone}|${purpose}|${otp}`).digest("hex");
@@ -89,6 +95,9 @@ const sendOtp = async (req, res) => {
     if (purpose === "signup" && exists) {
       return res.status(409).json({ message: "This number is already registered. Please log in." });
     }
+    if (purpose === "change" && exists) {
+      return res.status(409).json({ message: "This number is already used by another account." });
+    }
     if (purpose === "reset" && !exists) {
       return res.status(404).json({ message: "No account found with this number." });
     }
@@ -113,15 +122,29 @@ const sendOtp = async (req, res) => {
     let providerRef = "";
 
     if (!test) {
+      let sent;
       if (provider() === "messagecentral" && !module.exports._send) {
         // Message Central creates + checks the code itself
-        const sent = await messageCentral.sendOtp(phone, OTP_LENGTH);
-        if (!sent.ok) return res.status(502).json({ message: "Could not send the SMS. Please try again in a minute." });
-        providerRef = sent.ref;
-        otp = "";
+        sent = await messageCentral.sendOtp(phone, OTP_LENGTH);
+        if (sent.ok) {
+          providerRef = sent.ref;
+          otp = "";
+        }
       } else {
-        const sent = await (module.exports._send || sendOtpSms)(phone, otp, EXPIRY_MIN);
-        if (!sent.ok) return res.status(502).json({ message: "Could not send the SMS. Please try again in a minute." });
+        sent = await (module.exports._send || sendOtpSms)(phone, otp, EXPIRY_MIN);
+      }
+
+      if (!sent.ok) {
+        // 🆘 SMS company is down → NEW students can still sign up with the
+        // institute's backup code (api.env: OTP_SIGNUP_FALLBACK_CODE=246810).
+        // Only for sign-up (never for password reset). Remove the line to stop it.
+        const backup = signupFallbackCode();
+        if (purpose !== "signup" || !backup) {
+          return res.status(502).json({ message: "Could not send the SMS. Please try again in a minute." });
+        }
+        console.warn(`🆘 SMS failed → backup sign-up code used for ${phone.slice(0, 2)}******${phone.slice(-2)}`);
+        otp = backup;
+        providerRef = "";
       }
     }
 

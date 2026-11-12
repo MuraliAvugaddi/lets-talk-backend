@@ -32,6 +32,9 @@ const setNotification = async (req, res) => {
       });
     }
 
+    // 🔔 also as a phone notification (online / offline / all students)
+    require("../../utils/notify").notice(newNotif.message, newNotif.targetMode);
+
     return res.status(200).json({
       success: true,
       message: `${cleanMode.toUpperCase()} notification posted successfully`,

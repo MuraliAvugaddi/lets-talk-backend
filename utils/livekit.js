@@ -80,24 +80,71 @@ const closeRoom = async (name) => {
 };
 
 // ---------- join token (one room, audio only) ----------
-const joinToken = async ({ userId, name, room, staff }) => {
+// observer = admin/principal silently listening: hidden from everyone, cannot speak
+// observer + speak = admin talks: mic allowed, NOT hidden (LiveKit only sends the voice
+//   of visible people) — the trainer & student apps still never show "observer_…" people
+const joinToken = async ({ userId, name, room, staff, observer = false, speak = false }) => {
   const at = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, {
-    identity: String(userId),
+    identity: observer ? `observer_${String(userId)}` : String(userId),
     name: name || "User",
-    metadata: JSON.stringify({ role: staff ? "admin" : "user" }), // apps read "admin" = trainer
+    metadata: JSON.stringify({ role: observer ? "observer" : staff ? "admin" : "user" }), // apps read "admin" = trainer
     ttl: "6h",
   });
   at.addGrant({
     roomJoin: true,
     room,
     canSubscribe: true,
-    canPublish: true,
-    canPublishData: true,
+    canPublish: !observer || !!speak,
+    canPublishData: !observer,
     canPublishSources: [TrackSource.MICROPHONE], // 🎧 audio only — nobody can send video
     canUpdateOwnMetadata: false,
-    roomAdmin: !!staff,
+    roomAdmin: !!staff && !observer,
+    hidden: !!observer && !speak, // listening admin: invisible to everyone
   });
   return at.toJwt();
+};
+
+// ---------- 🎙 admin who was listening wants to TALK (or go quiet again) ----------
+// speak=true  → mic allowed. The voice reaches everyone, but the trainer & student
+//               apps never SHOW "observer_…" people (no name, no photo, no count).
+//               (hidden must be off while talking, or LiveKit doesn't send the voice)
+// speak=false → fully hidden again, mic removed
+const setObserverSpeaking = (room, userId, name, speak) =>
+  rooms().updateParticipant(room, `observer_${String(userId)}`, {
+    name: name || "Admin",
+    metadata: JSON.stringify({ role: "observer" }),
+    permission: {
+      canSubscribe: true,
+      canPublish: !!speak,
+      canPublishData: !!speak,
+      canPublishSources: [TrackSource.MICROPHONE],
+      canUpdateMetadata: false,
+      hidden: !speak,
+    },
+  });
+
+// ---------- 🔍 who is in the room and who is sending sound (admin check) ----------
+const roomCheck = async (room) => {
+  const list = await rooms().listParticipants(room);
+  return (list || []).map((p) => ({
+    identity: p.identity,
+    name: p.name,
+    hidden: !!(p.permission && p.permission.hidden),
+    canPublish: !!(p.permission && p.permission.canPublish),
+    audio: (p.tracks || [])
+      .filter((t) => t.type === TrackType.AUDIO)
+      .map((t) => ({ muted: !!t.muted, sid: t.sid })),
+  }));
+};
+
+// ---------- every class that is running right now ----------
+const listLiveRooms = async () => {
+  const list = await rooms().listRooms();
+  return (list || []).map((r) => ({
+    name: r.name,
+    participants: Number(r.numParticipants || 0),
+    startedAt: r.creationTime ? new Date(Number(r.creationTime) * 1000) : null,
+  }));
 };
 
 // ---------- trainer controls ----------
@@ -116,6 +163,7 @@ const muteAudioOf = async (room, info) => {
 
 const muteUsers = async (room, identities) => {
   for (const id of identities) {
+    if (String(id).startsWith("observer_")) continue; // never mute the admin / principal
     const info = await rooms().getParticipant(room, String(id)).catch(() => null);
     if (info) await muteAudioOf(room, info);
   }
@@ -124,13 +172,18 @@ const muteUsers = async (room, identities) => {
 const muteAllExcept = async (room, keepIdentity) => {
   const list = await rooms().listParticipants(room);
   const talking = list.filter(
-    (p) => p.identity !== String(keepIdentity) && (p.tracks || []).some((t) => t.type === TrackType.AUDIO && !t.muted)
+    (p) =>
+      p.identity !== String(keepIdentity) &&
+      !String(p.identity).startsWith("observer_") && // the admin / principal is never muted by "mute all"
+      (p.tracks || []).some((t) => t.type === TrackType.AUDIO && !t.muted)
   );
   await Promise.all(talking.map((p) => muteAudioOf(room, p)));
   return talking.length;
 };
 
 module.exports = {
+  roomCheck,
+  setObserverSpeaking,
   isConfigured,
   provider,
   isRoomLive,
@@ -138,6 +191,7 @@ module.exports = {
   openRoom,
   closeRoom,
   joinToken,
+  listLiveRooms,
   setRoomState,
   removeUser,
   muteUsers,

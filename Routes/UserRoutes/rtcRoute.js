@@ -15,6 +15,12 @@ router.post("/prepare-call", requireAuth(), viaLiveKit, prepareCall);
 router.post("/token", requireAuth(), rtc.rtcToken);
 router.post("/room-token", requireAuth(), rtc.roomToken);
 
+// 👀 admin / manager quietly listens to any running class (hidden, cannot speak)
+router.get("/live-rooms", requireAuth("admin", "manager"), rtc.liveRooms);
+router.post("/observe-token", requireAuth("admin", "manager"), rtc.observeToken);
+router.post("/observe-speak", requireAuth("admin", "manager"), rtc.observeSpeak); // 🎙 admin talks in the class
+router.get("/room-check", requireAuth("admin", "manager"), rtc.roomCheck); // 🔍 who is sending sound
+
 // trainer / admin controls
 router.post("/room/state", requireAuth(...STAFF_ROLES), rtc.setState);
 router.post("/room/kick", requireAuth(...STAFF_ROLES), rtc.kick);

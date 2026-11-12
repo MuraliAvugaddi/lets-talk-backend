@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 const ClassMode = require("../../Models/classMode");
-const { getModes, invalidate, parseTime, formatTime } = require("../../utils/classMode");
+const { getModes, invalidate, parseTime, formatTime, cleanStages } = require("../../utils/classMode");
 const Attendance = require("../../Models/attendance");
 const User = require("../../Models/users");
 const { dateKey, normalizeDateKey, legacyDateVariants } = require("../../utils/time");
@@ -14,6 +14,8 @@ const { enabledStageTimings } = require("../../utils/batches");
 //   POST /api/class-mode/assembly        { active: true|false, title?, startTime: "11:00 AM", note? }
 // Both stay on until the admin removes them.
 //   rain body may include { reason: "Heavy rain" } — shown to trainers and students.
+//   rain body may include { stages: ["stage1","stage3"] } — only those offline stages
+//   go online, the others stay offline. Empty / missing = all stages.
 // =====================================================
 
 const view = (d) =>
@@ -22,6 +24,7 @@ const view = (d) =>
         active: !!d.active,
         title: d.title || "",
         note: d.note || "",
+        stages: Array.isArray(d.stages) ? d.stages : [],
         startTime: d.startTime || "",
         startMinutes: d.startMinutes || 0,
         sessionKey: d.sessionKey || "",
@@ -60,6 +63,7 @@ const setMode = async (req, res, kind) => {
       update.sessionKey = crypto.randomBytes(3).toString("hex"); // fresh live call every time
       // Why offline classes are online today ("Heavy rain", "Festival", …) / note for the special class
       update.note = String(req.body.reason || req.body.note || "").slice(0, 300);
+      if (kind === "rain") update.stages = cleanStages(req.body.stages);
       if (kind === "assembly") {
         const minutes = parseTime(req.body.startTime);
         if (minutes === null) return res.status(400).json({ message: "Pick a start time, e.g. 11:00 AM" });
@@ -71,14 +75,31 @@ const setMode = async (req, res, kind) => {
       update.endedAt = new Date();
     }
 
+    // the live room of the special class that is ending (closed below)
+    const old = !active && kind === "assembly" ? await ClassMode.findOne({ kind }).lean() : null;
+
     const doc = await ClassMode.findOneAndUpdate({ kind }, { $set: update }, { upsert: true, returnDocument: "after", setDefaultsOnInsert: true });
     invalidate();
     if (kind === "assembly") require("./streamController").forgetAssembly();
     await broadcast(req);
+
+    if (kind === "assembly" && !active && old && old.active) {
+      // ⛔ special class switched off → close the live room so EVERY phone leaves at once
+      const room = require("./streamController")._internal.buildAssemblyCallId(old);
+      if (req.io) req.io.emit("assembly_ended", { callId: room });
+      try {
+        await require("../../utils/livekit").closeRoom(room);
+      } catch (_) {}
+    }
+
+    // 🔔
+    const notify = require("../../utils/notify");
+    if (active && kind === "assembly") notify.specialClassSet(doc.title, doc.startTime);
+    if (active && kind === "rain") notify.rainDay(doc.note, doc.stages);
     res.status(200).json({
       message: active
         ? kind === "rain"
-          ? `Offline classes are online now${doc.note ? ` (${doc.note})` : ""}`
+          ? `${doc.stages && doc.stages.length ? doc.stages.map((s) => s.replace("stage", "Stage ")).join(", ") : "All offline classes"} online now${doc.note ? ` (${doc.note})` : ""}`
           : `${doc.title} set for ${doc.startTime}`
         : "Back to normal classes",
       [kind]: view(doc),

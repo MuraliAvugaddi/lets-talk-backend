@@ -42,9 +42,35 @@ const invalidate = () => {
   cacheAt = 0;
 };
 
+// 🌐 "Offline classes online" may be for some stages only (admin picks Stage 1, 3 …).
+// rain.stages empty → every stage. stage = "stage1" … "stage7".
+const ALL_STAGES = ["stage1", "stage2", "stage3", "stage4", "stage5", "stage6", "stage7"];
+const cleanStages = (list) => {
+  const arr = Array.isArray(list) ? list : String(list || "").split(",");
+  const out = new Set();
+  for (const x of arr) {
+    const m = String(x || "").toLowerCase().replace(/\s+/g, "").match(/^(?:stage)?([1-7])$/);
+    if (m) out.add(`stage${m[1]}`);
+  }
+  const sorted = ALL_STAGES.filter((s) => out.has(s));
+  return sorted.length === ALL_STAGES.length ? [] : sorted; // all 7 picked = "all"
+};
+const rainCovers = (rain, stage) => {
+  if (!rain || rain.active === false) return false;
+  const list = Array.isArray(rain.stages) ? rain.stages : [];
+  if (!list.length) return true;
+  return list.includes(String(stage || "").toLowerCase().replace(/\s+/g, ""));
+};
+
 // Principal class arrival: on time until 15 min after the start, then late
 const ASSEMBLY_GRACE_MIN = 15;
 const assemblyArrival = (assembly, minutesNow) =>
   !assembly || minutesNow <= (assembly.startMinutes || 0) + ASSEMBLY_GRACE_MIN ? "Present" : "Late";
 
-module.exports = { getModes, invalidate, parseTime, formatTime, assemblyArrival };
+// tests: put a known state in the cache (no database)
+const _prime = (modes) => {
+  cache = { rain: null, assembly: null, ...modes };
+  cacheAt = Date.now() + 3600000;
+};
+
+module.exports = { _prime, getModes, invalidate, parseTime, formatTime, assemblyArrival, cleanStages, rainCovers, ALL_STAGES };

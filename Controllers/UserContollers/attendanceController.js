@@ -24,9 +24,10 @@ const { BATCHES, normBatch, stageBatch, enabledStageTimings, inBatchWindow, batc
 const BatchVisit = require("../../Models/batchVisit");
 const { practiceIndex } = require("./practiceController");
 const Practice = require("../../Models/practice");
-const { getModes, assemblyArrival } = require("../../utils/classMode");
+const { getModes, assemblyArrival, rainCovers } = require("../../utils/classMode");
 const { holidayFor, loadHolidays, holidayApplies, publicHoliday } = require("../../utils/holidays");
 const rules = require("../../utils/attendanceRules");
+const notify = require("../../utils/notify");
 
 // =====================================================
 // CONFIG (override on Render → Environment)
@@ -93,6 +94,20 @@ const closeSession = (record, when) => {
 // Which batch a check-in belongs to: what the app sent, else the student's timing for THIS stage
 const resolveBatch = (user, sentBatch, language, stage) =>
   normBatch(sentBatch) || (user && user.role === "student" ? stageBatch(user, language, stage) || null : null);
+
+// 🕐 OFFLINE check-in: judge on time / late against the student's OWN class.
+// Old apps send the batch that was running when the screen opened — at 10:25
+// that is the 9:00 class, which made a 10:30 student "78 min late".
+// Only when they check in outside their own class window (another timing)
+// do we use the class running now.
+const offlineBatchFor = (user, when, sentBatch, language, stage) => {
+  if (!user || user.role !== "student") return resolveBatch(user, sentBatch, language, stage) || DEFAULT_BATCH;
+  const own = stageBatch(user, language, stage);
+  const mins = istMinutesOfDay(when);
+  if (own && inBatchWindow(own, mins)) return own;
+  const running = batchAt(mins);
+  return (running && running.label) || own || normBatch(sentBatch) || DEFAULT_BATCH;
+};
 
 const evaluateArrival = (user, when, batchTime) =>
   isStaff(user) ? evaluateTeacherStatus(when) : evaluateStudentBatchStatus(when, batchTime);
@@ -189,7 +204,7 @@ const markAttendance = async (req, res) => {
       });
     }
 
-    const batchTime = shiftInfo ? shiftInfo.batchTime : resolveBatch(user, req.body.batchTime, language, stage) || DEFAULT_BATCH;
+    const batchTime = shiftInfo ? shiftInfo.batchTime : offlineBatchFor(user, now, req.body.batchTime, language, stage);
     const { status, lateByMinutes } = arrivalInfo(user, now, batchTime);
 
     const record = await Attendance.findOneAndUpdate(
@@ -210,6 +225,8 @@ const markAttendance = async (req, res) => {
       },
       { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
     );
+
+    if (!shiftInfo) notify.attendance(userId, status, { language, stage, lateByMinutes }); // 🔔 offline check-in
 
     const lateText = lateByMinutes ? ` — ${lateByMinutes} min late` : "";
     res.status(200).json({
@@ -252,7 +269,7 @@ const joinOnlineClass = async (req, res) => {
     }
 
     // 🌧 Rain day: an offline student / trainer attending online
-    const rainDay = !!(modes.rain && user.mode === "offline");
+    const rainDay = !!(modes.rain && user.mode === "offline" && rainCovers(modes.rain, stage));
 
     // 🔁 Student joined a DIFFERENT timing (e.g. timing 03:30 PM but works then,
     // so joins the 09:00 AM class). Attendance COUNTS, but the record says
@@ -350,6 +367,8 @@ const joinOnlineClass = async (req, res) => {
         arrivalStatus: arrival,
         status: deriveOnlineStatus(0, arrival),
       });
+      // 🔔 first join today: on time / late
+      if (user.role === "student") notify.attendance(userId, arrival, { language, stage, lateByMinutes: a.lateByMinutes });
     }
 
     res.status(200).json({
@@ -1255,6 +1274,14 @@ const autoMarkAbsent = async (req, res) => {
 
     if (ops.length) await Attendance.bulkWrite(ops, { ordered: false });
 
+    // 🔔 tell the students who were absent (one message each, sent in the background)
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+    for (const op of ops) {
+      const f = op.updateOne.filter;
+      const u = byId.get(String(f.userId));
+      if (u && u.role === "student") notify.attendance(u._id, "Absent", { language: f.language, stage: f.stage });
+    }
+
     const message = `Closed ${open.length} open sessions, marked ${ops.length} absent${skippedHoliday ? `, ${skippedHoliday} on holiday` : ""}.`;
     console.log(`✅ Auto-absent ${date}: ${message}`);
     if (res) res.status(200).json({ message });
@@ -1265,6 +1292,7 @@ const autoMarkAbsent = async (req, res) => {
 };
 
 module.exports = {
+  offlineBatchFor,
   _assembly: { assemblyStagesOf },
   markAttendance,
   joinOnlineClass,

@@ -63,6 +63,52 @@ const reviewPayload = (test, result) => {
 // =====================================================
 // ADMIN: publish / view / pause / delete test
 // =====================================================
+/** Returns an error text, or null when every question is OK */
+const checkQuestions = (questions, { strict = false } = {}) => {
+  if (!Array.isArray(questions) || questions.length === 0) return "Add at least one question";
+  if (questions.length > 200) return "Too many questions (max 200)";
+  for (const [i, q] of questions.entries()) {
+    const ok =
+      q &&
+      String(q.questionText || "").trim() &&
+      Array.isArray(q.options) &&
+      q.options.length >= 2 &&
+      (!strict || q.options.every((o) => String(o || "").trim())) &&
+      Number.isInteger(q.correctOptionIndex) &&
+      q.correctOptionIndex >= 0 &&
+      q.correctOptionIndex < q.options.length;
+    if (!ok) return `Question ${i + 1} is invalid`;
+  }
+  return null;
+};
+
+const cleanQuestions = (questions) =>
+  questions.map((q) => ({
+    questionText: String(q.questionText).trim(),
+    options: q.options.map((o) => String(o).trim()),
+    correctOptionIndex: q.correctOptionIndex,
+  }));
+
+const clampDuration = (d) => Math.min(Math.max(Number(d) || 25, 5), 180);
+
+/** Make this the live test of that language + stage (new version for everyone) */
+const publishTest = async (req, { language, stage, questions, durationMinutes, isActive }) => {
+  const test = await Test.findOneAndUpdate(
+    testFilter(language, stage),
+    {
+      language,
+      stage,
+      isActive: isActive !== undefined ? !!isActive : true,
+      questions,
+      durationMinutes: clampDuration(durationMinutes),
+      publishedAt: new Date(), // new version → everyone can take it; old results stay saved
+    },
+    { upsert: true, returnDocument: "after" }
+  );
+  announce(req, language, stage, "published");
+  return test;
+};
+
 const updateTest = async (req, res) => {
   try {
     const language = normLanguage(req.body.language);
@@ -72,33 +118,10 @@ const updateTest = async (req, res) => {
     if (!language || !stage || !Array.isArray(questions) || questions.length === 0) {
       return res.status(400).json({ message: "Missing required test fields" });
     }
+    const bad = checkQuestions(questions);
+    if (bad) return res.status(400).json({ message: bad });
 
-    for (const [i, q] of questions.entries()) {
-      const ok =
-        q &&
-        String(q.questionText || "").trim() &&
-        Array.isArray(q.options) &&
-        q.options.length >= 2 &&
-        Number.isInteger(q.correctOptionIndex) &&
-        q.correctOptionIndex >= 0 &&
-        q.correctOptionIndex < q.options.length;
-      if (!ok) return res.status(400).json({ message: `Question ${i + 1} is invalid` });
-    }
-
-    const test = await Test.findOneAndUpdate(
-      testFilter(language, stage),
-      {
-        language,
-        stage,
-        isActive: isActive !== undefined ? !!isActive : true,
-        questions,
-        durationMinutes: Math.min(Math.max(Number(durationMinutes) || 25, 5), 180),
-        publishedAt: new Date(), // new version → everyone can take it; old results stay saved
-      },
-      { upsert: true, returnDocument: "after" }
-    );
-
-    announce(req, language, stage, "published");
+    const test = await publishTest(req, { language, stage, questions, durationMinutes, isActive });
     res.status(200).json({ message: "Test published successfully", test });
   } catch (error) {
     console.error("Update Test Error:", error);
@@ -429,5 +452,9 @@ module.exports = {
   startTest,
   submitTest,
   getMyTestResults,
+  publishTest,
+  checkQuestions,
+  cleanQuestions,
+  clampDuration,
   _internal: { versionOf, secondsLeftFor },
 };

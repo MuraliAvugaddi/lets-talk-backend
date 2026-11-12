@@ -1,7 +1,7 @@
 const { StreamClient } = require("@stream-io/node-sdk");
 const User = require("../../Models/users");
 const { isValidId, STAFF_ROLES, ADMIN_ROLES, normStage, normLanguage } = require("../../utils/normalize");
-const { getModes } = require("../../utils/classMode");
+const { getModes, rainCovers } = require("../../utils/classMode");
 const { ensureUser, addMember } = require("../../utils/streamBatch");
 const { dateKey } = require("../../utils/time");
 const { effectiveSection } = require("./sectionMergeController");
@@ -211,7 +211,14 @@ const prepareCall = async (req, res) => {
     }
 
     // 🌧 RAIN DAY — offline trainer + offline students meet online (one class per stage)
-    const rain = !!(modes.rain && type === "class" && user.mode === "offline");
+    //    admin may pick some stages only → other stages stay offline
+    const rain = !!(modes.rain && type === "class" && user.mode === "offline" && rainCovers(modes.rain, stage));
+    if (modes.rain && type === "class" && user.mode === "offline" && !rain && !STAFF_ROLES.includes(user.role)) {
+      return res.status(409).json({
+        error: `Today only ${(modes.rain.stages || []).map((s) => s.replace("stage", "Stage ")).join(", ")} is online. Your ${stage.replace("stage", "Stage ")} class is at the institute as usual.`,
+        offlineToday: true,
+      });
+    }
 
     // 🔀 SECTION MERGE (English online classes): Section B merged into A →
     // B students join A's call. Decided HERE from the database, so a student
@@ -243,6 +250,8 @@ const prepareCall = async (req, res) => {
 
     if (STAFF_ROLES.includes(user.role)) {
       const ok = await hostCall(res, user, callId, { rain }, rtc);
+      // 👀 admin "Watch live classes" list updates at once
+      if (ok && req.io) req.io.to("admin_room").emit("live_rooms_changed", { room: callId, live: true, at: Date.now() });
       // students waiting to move into this class (merge / unmerge) join now
       if (ok && req.io && type === "class") {
         req.io.emit("class_started", { language, stage, section: String(section || "").toUpperCase(), callId, at: Date.now() });

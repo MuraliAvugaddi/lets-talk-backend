@@ -159,6 +159,10 @@ const verifyFeePayment = async (req, res) => {
       });
     }
 
+    // 🔔
+    if (status === "verified") require("../../utils/notify").feeApproved(user._id);
+    else require("../../utils/notify").feeRejected(user._id);
+
     res.status(200).json({ success: true, message: `Fee status updated to ${status}` });
   } catch (error) {
     console.error("Verify Fee Error:", error);

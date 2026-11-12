@@ -28,7 +28,9 @@ const {
   ADMIN_ROLES,
 } = require("../../utils/normalize");
 
-const PUBLIC_FIELDS = "-password -sessionToken";
+const PUBLIC_FIELDS = "-password -sessionToken -fcmTokens";
+const notify = require("../../utils/notify");
+const push = require("../../utils/push");
 
 const cleanPhone = (phone) => String(phone || "").replace(/\D/g, "").slice(-10);
 
@@ -55,6 +57,8 @@ const toPublicUser = (user) => ({
   englishAccess: user.englishAccess,
   hindiAccess: user.hindiAccess,
   feeStatus: user.feeStatus,
+  modeBase: user.modeBase || "",
+  modeTempUntil: user.modeTempUntil || null,
 });
 
 // Only admins should see "student_update" events, not all 2,000 phones
@@ -293,6 +297,8 @@ const getStudentById = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const query = { role: "student" };
+    // 🚪 dropouts live only in the Dropouts screen (add ?includeDropouts=true to see them here)
+    if (String(req.query.includeDropouts) !== "true") query.isDropout = { $ne: true };
     const mode = normMode(req.query.mode);
     if (mode) query.mode = mode;
 
@@ -393,6 +399,13 @@ const updateUserAccess = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    // remember what the student had → notify only what is NEW
+    const before = {
+      mode: user.mode,
+      english: { ...(user.englishAccess?.toObject?.() || user.englishAccess || {}) },
+      hindi: { ...(user.hindiAccess?.toObject?.() || user.hindiAccess || {}) },
+    };
+
     const english = cleanAccessMap(req.body.englishAccess);
     const hindi = cleanAccessMap(req.body.hindiAccess);
     if (english) user.englishAccess = english;
@@ -423,9 +436,17 @@ const updateUserAccess = async (req, res) => {
     }
     notifyAdmins(req, "student_update", { userId: String(user._id), by: req.user && String(req.user._id) === String(user._id) ? "student" : "admin", user: toPublicUser(user) });
 
+    // 🔔 🎉 new stages / 🔄 mode change
+    const opened = (old, now) =>
+      [1, 2, 3, 4, 5, 6, 7].filter((n) => now && now[`stage${n}`] === true && old[`stage${n}`] !== true);
+    notify.stageUnlocked(user._id, "English", opened(before.english, user.englishAccess));
+    notify.stageUnlocked(user._id, "Hindi", opened(before.hindi, user.hindiAccess));
+    if (before.mode !== user.mode) notify.modeChanged(user);
+
     const out = user.toObject();
     delete out.password;
     delete out.sessionToken;
+    delete out.fcmTokens;
     res.status(200).json({ message: "User access updated successfully", user: out });
   } catch (error) {
     console.error("Update User Access Error:", error);
@@ -440,6 +461,8 @@ const updateStudentStatus = async (req, res) => {
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
+    const beforeMode = user.mode;
+    const beforeFee = user.feeStatus;
 
     if (feeStatus === "paid" || feeStatus === "unpaid") {
       user.feeStatus = feeStatus;
@@ -449,7 +472,17 @@ const updateStudentStatus = async (req, res) => {
       }
     }
     if (onlineSection) user.onlineSection = normSection(onlineSection);
-    if (normMode(mode)) user.mode = normMode(mode);
+    if (normMode(mode) && normMode(mode) !== user.mode) {
+      // changed here = permanent → forget any temporary change
+      user.mode = normMode(mode);
+      if (user.modeBase) {
+        user.modeBase = "";
+        user.modeTempUntil = null;
+        require("../../Models/modeChange")
+          .updateMany({ userId: user._id, status: "active" }, { $set: { status: "cancelled", endedAt: new Date() } })
+          .catch(() => {});
+      }
+    }
     if (batchTime !== undefined) {
       const batch = normBatch(batchTime);
       if (batchTime && !batch) return res.status(400).json({ message: "Invalid batch timing" });
@@ -473,9 +506,14 @@ const updateStudentStatus = async (req, res) => {
     }
     notifyAdmins(req, "student_update", { userId: String(user._id), by: req.user && String(req.user._id) === String(user._id) ? "student" : "admin", user: toPublicUser(user) });
 
+    // 🔔 fee paid / mode changed
+    if (beforeFee !== "paid" && user.feeStatus === "paid") notify.feeApproved(user._id);
+    if (beforeMode !== user.mode) notify.modeChanged(user);
+
     const out = user.toObject();
     delete out.password;
     delete out.sessionToken;
+    delete out.fcmTokens;
     res.status(200).json({ message: "Student status updated", user: out });
   } catch (error) {
     console.error("Update Student Status Error:", error);
@@ -581,7 +619,45 @@ const deleteUser = async (req, res) => {
   }
 };
 
+// =====================================================
+// 🔔 PUSH TOKEN — the app sends its Firebase token after login
+//   POST   /api/user/push-token  { token }
+//   DELETE /api/user/push-token  { token }   (logout)
+// =====================================================
+const savePushToken = async (req, res) => {
+  try {
+    const token = String(req.body.token || "").trim();
+    if (token.length < 20 || token.length > 4096) return res.status(400).json({ message: "Invalid token" });
+    // one phone = one user (a phone that logs into another account moves over)
+    await User.updateMany({ _id: { $ne: req.user._id }, fcmTokens: token }, { $pull: { fcmTokens: token } });
+    const user = await User.findById(req.user._id).select("role mode fcmTokens");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    user.fcmTokens = [...(user.fcmTokens || []).filter((t) => t !== token), token].slice(-5);
+    await user.save();
+    push.later(() => push.syncTopics(user));
+    res.status(200).json({ success: true, push: push.isEnabled() });
+  } catch (error) {
+    console.error("Save push token error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+const removePushToken = async (req, res) => {
+  try {
+    const token = String(req.body.token || req.query.token || "").trim();
+    if (token) {
+      await User.updateOne({ _id: req.user._id }, { $pull: { fcmTokens: token } });
+      push.later(() => push.dropToken(token));
+    }
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 module.exports = {
+  savePushToken,
+  removePushToken,
   registerUser,
   loginUser,
   resetPassword,

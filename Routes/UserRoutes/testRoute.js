@@ -12,6 +12,14 @@ const {
   submitTest,
   getMyTestResults,
 } = require("../../Controllers/UserContollers/testController");
+const {
+  saveDraft,
+  myDrafts,
+  deleteMyDraft,
+  listDrafts,
+  getDraft,
+  reviewDraft,
+} = require("../../Controllers/UserContollers/testDraftController");
 const { auth, requireAuth } = require("../../middleware/authMiddleware");
 
 const ADMIN = ["manager", "admin"];
@@ -23,6 +31,14 @@ router.get("/admin/get-test", auth(...STAFF), getAdminTest); // live test + subm
 router.post("/admin/test-active", requireAuth(...ADMIN), setTestActive); // pause / resume
 router.delete("/admin/delete-test", requireAuth(...ADMIN), deleteTest); // deletes test only, results kept
 router.get("/admin/results", auth(...STAFF), getResults);
+
+// ✍️ Trainer writes a test → admin approves → admin releases
+router.post("/trainer/test-draft", requireAuth(...STAFF), saveDraft);
+router.get("/trainer/test-drafts", requireAuth(...STAFF), myDrafts);
+router.delete("/trainer/test-draft", requireAuth(...STAFF), deleteMyDraft);
+router.get("/admin/test-drafts", requireAuth(...ADMIN), listDrafts);
+router.get("/admin/test-draft", requireAuth(...ADMIN), getDraft);
+router.post("/admin/test-draft/review", requireAuth(...ADMIN), reviewDraft);
 
 // Student
 router.get("/user/test-overview", auth(), getTestOverview); // all 7 stages in one call

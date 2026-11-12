@@ -90,4 +90,12 @@ const deleteFromCloudinary = async (publicId, resourceType = "image") => {
   }
 };
 
-module.exports = { uploadBufferToCloudinary, uploadPromoImage, uploadPromoVideo, deleteFromCloudinary };
+// 🖼 Profile photos: square 400×400, face in the middle
+const uploadProfilePhoto = (buffer) =>
+  uploadStream(buffer, {
+    folder: "lets_talk_profiles",
+    resource_type: "image",
+    transformation: [{ width: 400, height: 400, crop: "fill", gravity: "face", quality: "auto", fetch_format: "auto" }],
+  });
+
+module.exports = { uploadBufferToCloudinary, uploadPromoImage, uploadPromoVideo, deleteFromCloudinary, uploadProfilePhoto };

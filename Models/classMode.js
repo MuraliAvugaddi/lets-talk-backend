@@ -10,6 +10,8 @@ const classModeSchema = new mongoose.Schema(
     active: { type: Boolean, default: false },
     title: { type: String, default: "", trim: true, maxlength: 120 },
     note: { type: String, default: "", trim: true, maxlength: 300 },
+    // rain: only these offline stages go online (["stage1","stage3"]). Empty = ALL stages.
+    stages: { type: [String], default: [] },
     startTime: { type: String, default: "" }, // assembly: "11:00 AM"
     startMinutes: { type: Number, default: 0 }, // assembly: minutes after midnight (IST)
     sessionKey: { type: String, default: "" }, // new on every start → a fresh live call

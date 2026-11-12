@@ -233,6 +233,45 @@ const monthlyFeeCron = cron.schedule(
   cronOptions
 );
 
+// 🔔 10:00 AM on the 1st → "please pay this month's fee"
+const feeReminderCron = cron.schedule(
+  "0 10 1 * *",
+  () => require("./utils/notify").feeReminder(),
+  cronOptions
+);
+
+// 🔔 every minute: special class starts in 10 minutes → tell every student (once)
+const remindedSpecial = new Set();
+const specialClassCron = cron.schedule(
+  "* * * * *",
+  async () => {
+    try {
+      if (mongoose.connection.readyState !== 1) return;
+      const { getModes } = require("./utils/classMode");
+      const a = (await getModes()).assembly;
+      if (!a || !a.active || !a.startMinutes) return;
+      const d = new Date(); // process TZ = Asia/Kolkata
+      const mins = d.getHours() * 60 + d.getMinutes();
+      const key = `${a.sessionKey}_${a.startMinutes}`;
+      if (mins === a.startMinutes - 10 && !remindedSpecial.has(key)) {
+        remindedSpecial.add(key);
+        require("./utils/notify").specialClassSoon(a.title, a.startTime);
+      }
+    } catch (_) {}
+  },
+  cronOptions
+);
+
+// 🔁 every 5 minutes: "online for 1 day / 2 days / 1 week" is over → back to normal
+const tempModeCron = cron.schedule(
+  "*/5 * * * *",
+  async () => {
+    if (mongoose.connection.readyState !== 1) return;
+    await require("./Controllers/UserContollers/modeChangeController").revertExpired(io);
+  },
+  cronOptions
+);
+
 // =====================================================
 // START / SHUTDOWN
 // =====================================================
@@ -255,6 +294,9 @@ const shutdown = async () => {
   try {
     autoAbsentCron.stop();
     monthlyFeeCron.stop();
+    feeReminderCron.stop();
+    specialClassCron.stop();
+    tempModeCron.stop();
     io.close();
     server.close();
     await mongoose.connection.close();
@@ -277,6 +319,9 @@ if (require.main === module) startServer();
 const stopCrons = () => {
   autoAbsentCron.stop();
   monthlyFeeCron.stop();
+  feeReminderCron.stop();
+  specialClassCron.stop();
+  tempModeCron.stop();
 };
 
 module.exports = { app, server, io, startServer, runStartupMigrations, stopCrons };

@@ -51,6 +51,7 @@ test("trainer start → students see 'live' at once (no waiting for cache)", asy
 });
 
 test("students may only join their own (or merged) section's room", async () => {
+  require("../utils/classMode")._prime({ rain: null });
   const { _internal } = require("../Controllers/UserContollers/rtcController");
   const student = { role: "student", mode: "online", onlineSection: "A" };
   assert.equal(await _internal.mayJoin(student, `english_stage1_seca_class_${today}_v3`), true);
@@ -59,4 +60,21 @@ test("students may only join their own (or merged) section's room", async () => 
   assert.equal(await _internal.mayJoin({ role: "teacher" }, "anything_room"), true);
   assert.equal(await _internal.mayJoin(student, `offline_english_stage1_class_${today}_v3`), false);
   assert.equal(await _internal.mayJoin({ ...student, mode: "offline" }, `offline_english_stage1_class_${today}_v3`), true);
+});
+
+test("offline → online for some stages only: other stages stay offline", async () => {
+  const cm = require("../utils/classMode");
+  assert.deepEqual(cm.cleanStages(["Stage 3", "stage1", "x", 9, "1"]), ["stage1", "stage3"]);
+  assert.deepEqual(cm.cleanStages([1, 2, 3, 4, 5, 6, 7]), []); // all = everyone
+  assert.equal(cm.rainCovers({ active: true, stages: [] }, "stage5"), true);
+  assert.equal(cm.rainCovers({ active: true, stages: ["stage1", "stage2"] }, "stage2"), true);
+  assert.equal(cm.rainCovers({ active: true, stages: ["stage1", "stage2"] }, "stage3"), false);
+  assert.equal(cm.rainCovers(null, "stage1"), false);
+
+  cm._prime({ rain: { active: true, stages: ["stage1"] } });
+  const { _internal } = require("../Controllers/UserContollers/rtcController");
+  const off = { role: "student", mode: "offline", onlineSection: "" };
+  assert.equal(await _internal.mayJoin(off, `offline_english_stage1_class_${today}_v3`), true);
+  assert.equal(await _internal.mayJoin(off, `offline_english_stage2_class_${today}_v3`), false);
+  cm.invalidate();
 });

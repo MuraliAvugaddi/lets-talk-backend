@@ -27,6 +27,16 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true },
     mode: { type: String, enum: ["online", "offline"], required: true },
+    // 🔁 Temporary mode change (admin: "online for 2 days"). modeBase = the student's
+    // normal mode, modeTempUntil = when it goes back by itself. Both empty = normal.
+    modeBase: { type: String, enum: ["", "online", "offline"], default: "" },
+    modeTempUntil: { type: Date, default: null },
+    // 🚪 Dropout: admin marked that the student stopped coming (all access was switched off)
+    isDropout: { type: Boolean, default: false },
+    // 🖼 profile photo (Cloudinary)
+    photoUrl: { type: String, default: "" },
+    photoPublicId: { type: String, default: "" },
+    droppedAt: { type: Date, default: null },
 
     onlineSection: { type: String, default: "None", trim: true },
     // Default class timing chosen at signup, e.g. "05:30 AM - 07:00 AM" (see utils/batches.js). "" = not chosen.
@@ -53,6 +63,9 @@ const userSchema = new mongoose.Schema(
 
     sessionToken: { type: String, default: "" },
 
+    // 🔔 phones of this user for push notifications (max 5, newest last)
+    fcmTokens: { type: [String], default: [], select: true },
+
     englishAccess: accessShape,
     hindiAccess: accessShape,
 
@@ -67,5 +80,6 @@ userSchema.index({ role: 1, mode: 1 });
 userSchema.index({ feePaymentStatus: 1 });
 userSchema.index({ role: 1, onlineSection: 1 });
 userSchema.index({ role: 1, batchTime: 1 });
+userSchema.index({ modeTempUntil: 1 }, { sparse: true });
 
 module.exports = mongoose.model("User", userSchema);
