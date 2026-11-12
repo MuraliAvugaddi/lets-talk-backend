@@ -76,6 +76,20 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// ⚡ Login memory (utils/userCache): forget a user the moment they are changed
+const userCache = require("../utils/userCache");
+userSchema.post("save", (doc) => userCache.forget(doc && doc._id));
+userSchema.post(["deleteOne", "findOneAndDelete"], { document: false, query: true }, function () {
+  userCache.clearAll();
+});
+userSchema.post(["updateOne", "findOneAndUpdate", "replaceOne"], function () {
+  const f = this.getFilter ? this.getFilter() : {};
+  const id = f && f._id;
+  if (id && (typeof id === "string" || typeof id.toHexString === "function")) userCache.forget(String(id));
+  else userCache.clearAll(); // many users / unknown filter → forget everyone (safe)
+});
+userSchema.post(["updateMany", "deleteMany", "bulkWrite"], () => userCache.clearAll());
+
 userSchema.index({ role: 1, mode: 1 });
 userSchema.index({ feePaymentStatus: 1 });
 userSchema.index({ role: 1, onlineSection: 1 });

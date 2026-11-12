@@ -29,11 +29,24 @@ const readBearer = (req) => {
   return header.startsWith("Bearer ") ? header.slice(7).trim() : null;
 };
 
+// ⚡ Each phone sends many requests in a few seconds (class start: 5 requests).
+// The account is remembered for 15 s → 2,000 students joining = far fewer database reads.
+// Any change to the user (access, section, logout, password) clears it at once.
+const userCache = require("../utils/userCache");
+const loadUser = async (id) => {
+  const hit = userCache.get(id);
+  if (hit) return hit;
+  const user = await User.findById(id).select("-password").lean();
+  if (user) userCache.set(id, user);
+  return user;
+};
+const forgetUser = (id) => userCache.forget(id);
+
 // Resolves the user from the token. Returns { user } or { error, status }.
 const resolveUser = async (token) => {
   try {
     const decoded = jwt.verify(token, getJwtSecret());
-    const user = await User.findById(decoded.id).select("-password").lean();
+    const user = await loadUser(String(decoded.id));
     if (!user) return { status: 401, error: { message: "User not found" } };
 
     if (decoded.sessionToken && user.sessionToken !== decoded.sessionToken) {
@@ -98,4 +111,4 @@ const auth = (...roles) => async (req, res, next) => {
 // Old name kept so nothing else breaks
 const protect = requireAuth();
 
-module.exports = { auth, requireAuth, protect, signToken, resolveUser, readBearer, getJwtSecret };
+module.exports = { auth, requireAuth, protect, signToken, resolveUser, readBearer, getJwtSecret, forgetUser };
