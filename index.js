@@ -70,6 +70,13 @@ const io = new Server(server, {
   pingInterval: 25000,
   pingTimeout: 20000,
 });
+// 🧩 multi-core mode (cluster.js): live messages reach students on EVERY worker
+if (require("cluster").isWorker) {
+  io.adapter(require("@socket.io/cluster-adapter").createAdapter());
+}
+// Only ONE process runs the daily jobs + start-up fixes (the "leader").
+// Single process (laptop / old setup) → it is the leader.
+const IS_LEADER = process.env.CRON_LEADER !== "0";
 
 app.use(cors({ origin: corsOrigin }));
 // gzip: the admin's 2,500-student list is ~10x smaller (3 MB → ~300 KB). Apps unzip it automatically.
@@ -218,9 +225,11 @@ mongoose.connection.on("disconnected", () => console.log("🔴 MongoDB disconnec
 // CRON JOBS (India time)
 // =====================================================
 const cronOptions = { timezone: "Asia/Kolkata", noOverlap: true };
+// multi-core: only the leader worker runs the jobs (otherwise 4 workers = 4× absent marks / pushes)
+const schedule = (...args) => (IS_LEADER ? cron.schedule(...args) : { stop() {} });
 
 // 20:15 IST — after the last batch (6:30–8:00 PM) has finished
-const autoAbsentCron = cron.schedule(
+const autoAbsentCron = schedule(
   process.env.AUTO_ABSENT_CRON || "15 20 * * *",
   async () => {
     if (mongoose.connection.readyState !== 1) return;
@@ -229,7 +238,7 @@ const autoAbsentCron = cron.schedule(
   cronOptions
 );
 
-const monthlyFeeCron = cron.schedule(
+const monthlyFeeCron = schedule(
   "0 0 1 * *",
   async () => {
     if (mongoose.connection.readyState !== 1) return;
@@ -239,7 +248,7 @@ const monthlyFeeCron = cron.schedule(
 );
 
 // 🔔 10:00 AM on the 1st → "please pay this month's fee"
-const feeReminderCron = cron.schedule(
+const feeReminderCron = schedule(
   "0 10 1 * *",
   () => require("./utils/notify").feeReminder(),
   cronOptions
@@ -247,7 +256,7 @@ const feeReminderCron = cron.schedule(
 
 // 🔔 every minute: special class starts in 10 minutes → tell every student (once)
 const remindedSpecial = new Set();
-const specialClassCron = cron.schedule(
+const specialClassCron = schedule(
   "* * * * *",
   async () => {
     try {
@@ -268,7 +277,7 @@ const specialClassCron = cron.schedule(
 );
 
 // 🔁 every 5 minutes: "online for 1 day / 2 days / 1 week" is over → back to normal
-const tempModeCron = cron.schedule(
+const tempModeCron = schedule(
   "*/5 * * * *",
   async () => {
     if (mongoose.connection.readyState !== 1) return;
@@ -285,7 +294,7 @@ const PORT = process.env.PORT || 5000;
 const startServer = async () => {
   try {
     await connectDatabase();
-    await runStartupMigrations();
+    if (IS_LEADER) await runStartupMigrations(); // once, not in every worker
     // backlog 4096: room for 2,000 phones connecting in the same second (default is only 511)
     server.listen({ port: Number(PORT), host: "0.0.0.0", backlog: 4096 }, () => {
       console.log(`🚀 Let's Speak backend on port ${PORT} (timezone ${process.env.TZ})`);

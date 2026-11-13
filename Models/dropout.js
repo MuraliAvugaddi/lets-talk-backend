@@ -33,6 +33,8 @@ const dropoutSchema = new mongoose.Schema(
     // access before dropping (given back on rejoin)
     englishAccess: { type: Object, default: {} },
     hindiAccess: { type: Object, default: {} },
+    englishDone: { type: Object, default: {} },
+    hindiDone: { type: Object, default: {} },
 
     // fee picture at the moment of dropping
     feeStatus: { type: String, default: "unpaid" },

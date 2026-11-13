@@ -31,7 +31,7 @@ const userSchema = new mongoose.Schema(
     // normal mode, modeTempUntil = when it goes back by itself. Both empty = normal.
     modeBase: { type: String, enum: ["", "online", "offline"], default: "" },
     modeTempUntil: { type: Date, default: null },
-    // 🚪 Dropout: admin marked that the student stopped coming (all access was switched off)
+    // 🚪 Dropout: admin marked that the student stopped coming (live class off, study material stays open)
     isDropout: { type: Boolean, default: false },
     // 🖼 profile photo (Cloudinary)
     photoUrl: { type: String, default: "" },
@@ -66,8 +66,12 @@ const userSchema = new mongoose.Schema(
     // 🔔 phones of this user for push notifications (max 5, newest last)
     fcmTokens: { type: [String], default: [], select: true },
 
+    // 🎓 CURRENT stage(s) → live class, attendance, tests, reminders
     englishAccess: accessShape,
     hindiAccess: accessShape,
+    // ✅ FINISHED stages (after promotion / dropout) → study material only (see utils/stageAccess.js)
+    englishDone: accessShape,
+    hindiDone: accessShape,
 
     role: { type: String, enum: ["student", "teacher", "manager", "admin"], default: "student" },
     teacherStage: { type: String, default: "stage1" },

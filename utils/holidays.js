@@ -18,10 +18,13 @@ const loadHolidays = async () => {
   return cache;
 };
 
-const clearHolidayCache = () => {
+// 🧩 multi-core: every worker forgets the old holiday list at once
+const bus = require("./clusterBus");
+bus.on("holidays.clear", () => {
   cache = null;
   cacheAt = 0;
-};
+});
+const clearHolidayCache = () => bus.publish("holidays.clear");
 
 // role: "student" | "teacher" | "manager" | "admin"
 const holidayApplies = (h, role) => {

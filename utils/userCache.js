@@ -12,8 +12,11 @@ const set = (id, user) => {
   if (cache.size > 20000) cache.clear(); // keep memory small
   cache.set(id, { user, at: Date.now() });
 };
-const forget = (id) => (id ? cache.delete(String(id)) : cache.clear());
-const clearAll = () => cache.clear();
+// tell every backend worker (multi-core mode) — see utils/clusterBus.js
+const bus = require("./clusterBus");
+bus.on("userCache.forget", (id) => (id ? cache.delete(String(id)) : cache.clear()));
+const forget = (id) => bus.publish("userCache.forget", id ? String(id) : null);
+const clearAll = () => bus.publish("userCache.forget", null);
 
 setInterval(() => {
   const old = Date.now() - TTL_MS;

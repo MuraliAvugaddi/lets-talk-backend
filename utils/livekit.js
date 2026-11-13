@@ -52,7 +52,10 @@ const isRoomLive = async (name) => {
   return p;
 };
 
-const markRoom = (name, started) => roomState.set(name, { started, at: Date.now() });
+// 🧩 multi-core: class started / ended → every worker knows at once
+const bus = require("./clusterBus");
+bus.on("livekit.markRoom", ({ name, started }) => roomState.set(name, { started, at: Date.now() }));
+const markRoom = (name, started) => bus.publish("livekit.markRoom", { name, started });
 
 setInterval(() => {
   const old = Date.now() - 10 * 60 * 1000;

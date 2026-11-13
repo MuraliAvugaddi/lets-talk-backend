@@ -83,6 +83,16 @@ const notify = {
     );
   },
 
+  // 🎓 last stage finished
+  courseFinished: (userId, language) =>
+    push.later(() =>
+      push.toUsers(userId, {
+        title: "🎓 Course completed!",
+        body: `Congratulations! You finished the ${language === "Hindi" ? "Hindi" : "English"} course. All your study material stays open in the app.`,
+        data: { click: "home", type: "stage" },
+      })
+    ),
+
   // 🔄 admin changed online / offline
   //    extra = "Only till 8 Nov. After that you are offline again." (temporary change)
   modeChanged: (user, extra = "") =>

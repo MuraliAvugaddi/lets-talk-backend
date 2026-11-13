@@ -2,8 +2,9 @@
 // 🚪 DROPOUTS — students who stopped the course in the middle
 //
 //   POST /api/admin/dropout           { userId, language, stage, reason, reasonType }
-//        → all access OFF, student saved in the dropout list (with a reason)
-//   POST /api/admin/dropout/rejoin    { id }           → access given back exactly as before
+//        → live class, attendance, tests, fees, notifications OFF.
+//          Study material of every stage the student had stays OPEN (englishDone / hindiDone).
+//   POST /api/admin/dropout/rejoin    { id }           → everything given back exactly as before
 //   POST /api/admin/dropout/note      { id, text }     → principal's call note
 //   GET  /api/admin/dropouts?status=dropped|rejoined|all&language=&stage=&mode=&section=&q=
 //   GET  /api/admin/dropout?id=       → one dropout with fees, attendance, practice, tests
@@ -15,10 +16,9 @@ const Attendance = require("../../Models/attendance");
 const Practice = require("../../Models/practice");
 const Result = require("../../Models/result");
 const { normLanguage, normStage, isValidId, escapeRegex, isAll } = require("../../utils/normalize");
-
-const STAGES = ["stage1", "stage2", "stage3", "stage4", "stage5", "stage6", "stage7"];
-const allOff = () => Object.fromEntries(STAGES.map((s) => [s, false]));
-const plain = (access) => Object.fromEntries(STAGES.map((s) => [s, !!(access && access[s])]));
+const { STAGES, allOff, plain } = require("../../utils/stageAccess");
+const push = require("../../utils/push");
+const merge = (a, b) => Object.fromEntries(STAGES.map((s) => [s, plain(a)[s] || plain(b)[s]]));
 
 /** Unpaid months up to this month (0 when paid). Never paid → counted from the joining month. */
 const monthsPending = (user, now = new Date()) => {
@@ -35,6 +35,8 @@ const tellEveryone = (req, user) => {
   req.io.to(String(user._id)).emit("permissions_updated", {
     englishAccess: user.englishAccess,
     hindiAccess: user.hindiAccess,
+    englishDone: user.englishDone,
+    hindiDone: user.hindiDone,
     isDropout: user.isDropout,
   });
   req.io.to("admin_room").emit("student_update", {
@@ -45,6 +47,8 @@ const tellEveryone = (req, user) => {
       id: user._id,
       englishAccess: user.englishAccess,
       hindiAccess: user.hindiAccess,
+      englishDone: user.englishDone,
+      hindiDone: user.hindiDone,
       isDropout: user.isDropout,
       droppedAt: user.droppedAt,
     },
@@ -81,6 +85,8 @@ const markDropout = async (req, res) => {
       reasonType: String(reasonType || "").slice(0, 40),
       englishAccess: plain(user.englishAccess),
       hindiAccess: plain(user.hindiAccess),
+      englishDone: plain(user.englishDone),
+      hindiDone: plain(user.hindiDone),
       feeStatus: user.feeStatus,
       lastFeePaymentDate: user.lastFeePaymentDate,
       monthsPending: monthsPending(user),
@@ -88,15 +94,21 @@ const markDropout = async (req, res) => {
       droppedByName: req.user ? req.user.name || "" : "",
     });
 
-    // 🔒 all access off
+    // 🔒 live class off — 📚 every stage the student had stays open as study material
+    user.englishDone = merge(user.englishDone, user.englishAccess);
+    user.hindiDone = merge(user.hindiDone, user.hindiAccess);
     user.englishAccess = allOff();
     user.hindiAccess = allOff();
     user.isDropout = true;
     user.droppedAt = new Date();
     await user.save();
     tellEveryone(req, user);
+    push.later(() => push.syncTopics(user)); // 🔕 no class / fee / notice pushes
 
-    res.status(200).json({ message: `${user.name} marked as dropout. All access is off.`, dropout: drop });
+    res.status(200).json({
+      message: `${user.name} marked as dropout. Live class, tests, fees and notifications are off. Study material stays open.`,
+      dropout: drop,
+    });
   } catch (error) {
     console.error("Mark Dropout Error:", error);
     res.status(500).json({ message: "Server Error" });
@@ -117,9 +129,12 @@ const rejoinDropout = async (req, res) => {
 
     user.englishAccess = plain(drop.englishAccess);
     user.hindiAccess = plain(drop.hindiAccess);
+    user.englishDone = plain(drop.englishDone); // old dropouts (before this update) had none → all off
+    user.hindiDone = plain(drop.hindiDone);
     user.isDropout = false;
     user.droppedAt = null;
     await user.save();
+    push.later(() => push.syncTopics(user)); // 🔔 notifications back on
 
     drop.status = "rejoined";
     drop.rejoinedAt = new Date();

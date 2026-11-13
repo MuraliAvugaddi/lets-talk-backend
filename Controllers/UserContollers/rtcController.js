@@ -16,6 +16,12 @@ const { STAFF_ROLES, normSection } = require("../../utils/normalize");
 const { effectiveSection } = require("./sectionMergeController");
 
 const isStaff = (u) => !!u && STAFF_ROLES.includes(u.role);
+const { liveBlockReason } = require("../../utils/stageAccess");
+// english_stage2_secA_… / hindi_stage1_… / offline_english_stage3_… → language + stage of the room
+const roomStage = (room) => {
+  const m = room.match(/^(?:offline_)?(english|hindi)_(stage\d)_/);
+  return m ? { language: m[1] === "hindi" ? "Hindi" : "English", stage: m[2] } : null;
+};
 const todayTag = () => dateKey().split("-").reverse().join(""); // YYYYMMDD (IST)
 const ROOM_RE = /^[a-z0-9_]{5,120}$/;
 
@@ -24,7 +30,10 @@ const mayJoin = async (user, room) => {
   if (isStaff(user)) return true;
   if (!ROOM_RE.test(room) || !room.includes(`_${todayTag()}_`)) return false;
 
-  if (room.startsWith("assembly_")) return !!(await getModes()).assembly;
+  if (room.startsWith("assembly_")) return !liveBlockReason(user, "English", "stage1", { assembly: true }) && !!(await getModes()).assembly;
+  // 🎓 finished stage / dropout → no live class (study material only)
+  const rs = roomStage(room);
+  if (rs && liveBlockReason(user, rs.language, rs.stage)) return false;
   if (room.startsWith("offline_")) {
     // only the stages the admin moved online today
     if (user.mode !== "offline") return false;

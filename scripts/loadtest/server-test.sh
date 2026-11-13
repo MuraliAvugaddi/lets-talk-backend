@@ -34,7 +34,14 @@ cleanup() {
 trap cleanup EXIT
 
 docker rm -f lt-api >/dev/null 2>&1 || true
-echo "▶ Starting the test copy of the backend…"
+# MODE=cluster (default): the new multi-core backend (cluster.js, 4 workers)
+# MODE=single: the old one-core backend + a CPU profile at the end
+if [ "${MODE:-cluster}" = "single" ]; then
+  START="node --cpu-prof --cpu-prof-dir=/tmp/prof index.js"
+else
+  START="node cluster.js"
+fi
+echo "▶ Starting the test copy of the backend (${MODE:-cluster} mode)…"
 docker run -d --name lt-api --network letsspeak_db \
   -v /opt/letsspeak/app:/app:ro -w /app \
   --env-file api.env \
@@ -46,9 +53,10 @@ docker run -d --name lt-api --network letsspeak_db \
   -e FIREBASE_SERVICE_ACCOUNT_BASE64= -e FIREBASE_PROJECT_ID= -e MC_PASSWORD= -e MSG91_AUTH_KEY= \
   -e ENFORCE_AUTH=true -e ENFORCE_BATCH_WINDOW=false \
   -e ACCOUNTS_FILE=/tmp/accounts.json \
-  node:22-bookworm-slim sh -c "node scripts/loadtest/livekit-stub.js >/dev/null & exec node --cpu-prof --cpu-prof-dir=/tmp/prof index.js" >/dev/null
-sleep 8
-docker logs lt-api 2>&1 | tail -4
+  -e WEB_CONCURRENCY="${WORKERS:-4}" \
+  node:22-bookworm-slim sh -c "node scripts/loadtest/livekit-stub.js >/dev/null & exec $START" >/dev/null
+sleep 10
+docker logs lt-api 2>&1 | grep -E "🧩|MongoDB|port 5099|❌|Error" | sort -u | head -6
 
 echo "▶ Creating $N test students…"
 docker exec lt-api node scripts/loadtest/seed.js "$N"

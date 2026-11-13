@@ -86,6 +86,7 @@ const {
   listDropouts,
   dropoutDetail,
 } = require("../../Controllers/UserContollers/dropoutController");
+const { promoteCandidates, promoteStudents } = require("../../Controllers/UserContollers/promotionController");
 
 const { auth, requireAuth } = require("../../middleware/authMiddleware");
 const { loginLimiter, resetLimiter, registerLimiter, otpLimiter, otpVerifyLimiter } = require("../../middleware/rateLimit");
@@ -132,12 +133,15 @@ router.put("/admin/update-student-status", requireAuth(...ADMIN), updateStudentS
 router.post("/admin/change-mode", requireAuth(...ADMIN), changeMode);
 router.post("/admin/change-mode/end", requireAuth(...ADMIN), endTempMode);
 router.get("/admin/mode-changes", requireAuth(...ADMIN), listModeChanges);
-// 🚪 dropouts: mark (all access off) → principal sees reason, fees, attendance → call → rejoin
+// 🚪 dropouts: mark (live class off, material stays open) → principal sees reason, fees, attendance → call → rejoin
 router.post("/admin/dropout", requireAuth(...ADMIN), markDropout);
 router.post("/admin/dropout/rejoin", requireAuth(...ADMIN), rejoinDropout);
 router.post("/admin/dropout/note", requireAuth(...ADMIN), addDropoutNote);
 router.get("/admin/dropouts", requireAuth(...ADMIN), listDropouts);
 router.get("/admin/dropout", requireAuth(...ADMIN), dropoutDetail);
+// 🎓 promote: old stage → finished (material only), next stage → current (live class)
+router.get("/admin/promote/candidates", requireAuth(...ADMIN), promoteCandidates);
+router.post("/admin/promote", requireAuth(...ADMIN), promoteStudents);
 router.delete("/users/:id", requireAuth(), deleteUser); // students: self only (checked inside)
 router.get("/admin/users-by-stage", auth(...STAFF), getUsersByStage);
 router.get("/admin/teachers", auth(...ADMIN), getAllTeachersFiltered);

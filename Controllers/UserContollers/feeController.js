@@ -46,6 +46,9 @@ const uploadFeeScreenshot = async (req, res) => {
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.isDropout) {
+      return res.status(403).json({ message: "Your classes are paused, so no fee is due. Please contact the institute to rejoin." });
+    }
     if (user.feeStatus === "paid" || user.feePaymentStatus === "verified") {
       return res.status(400).json({ message: "Your fee for this month is already verified." });
     }
@@ -193,8 +196,8 @@ const getPendingFeeSubmissions = async (req, res) => {
 const getAllFeeHistory = async (req, res) => {
   try {
     const [totalStudents, totalPaid, historyRecords, students] = await Promise.all([
-      User.countDocuments({ role: "student" }),
-      User.countDocuments({ role: "student", feeStatus: "paid" }),
+      User.countDocuments({ role: "student", isDropout: { $ne: true } }),
+      User.countDocuments({ role: "student", isDropout: { $ne: true }, feeStatus: "paid" }),
       FeeHistory.find({}).sort({ archivedAt: -1 }).lean(),
       User.find({ feePaymentStatus: { $in: ["verified", "rejected", "pending_verification"] } })
         .select("name phone mode onlineSection language feeLanguage englishAccess hindiAccess feePaymentScreenshot feeSubmittedAt feePaymentStatus lastFeePaymentDate")

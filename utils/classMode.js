@@ -37,10 +37,13 @@ const getModes = async ({ fresh = false } = {}) => {
   return cache;
 };
 
-const invalidate = () => {
+// 🧩 multi-core: every worker forgets the old class mode at once
+const bus = require("./clusterBus");
+bus.on("classMode.invalidate", () => {
   cache = null;
   cacheAt = 0;
-};
+});
+const invalidate = () => bus.publish("classMode.invalidate");
 
 // 🌐 "Offline classes online" may be for some stages only (admin picks Stage 1, 3 …).
 // rain.stages empty → every stage. stage = "stage1" … "stage7".

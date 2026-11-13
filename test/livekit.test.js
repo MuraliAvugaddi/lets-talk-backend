@@ -53,13 +53,18 @@ test("trainer start → students see 'live' at once (no waiting for cache)", asy
 test("students may only join their own (or merged) section's room", async () => {
   require("../utils/classMode")._prime({ rain: null });
   const { _internal } = require("../Controllers/UserContollers/rtcController");
-  const student = { role: "student", mode: "online", onlineSection: "A" };
+  const student = { role: "student", mode: "online", onlineSection: "A", englishAccess: { stage1: true, stage2: true, stage3: true }, hindiAccess: { stage1: true } };
   assert.equal(await _internal.mayJoin(student, `english_stage1_seca_class_${today}_v3`), true);
   assert.equal(await _internal.mayJoin(student, `hindi_stage1_class_${today}_v3`), true);
   assert.equal(await _internal.mayJoin(student, "english_stage1_seca_class_20200101_v3"), false); // old day
   assert.equal(await _internal.mayJoin({ role: "teacher" }, "anything_room"), true);
   assert.equal(await _internal.mayJoin(student, `offline_english_stage1_class_${today}_v3`), false);
   assert.equal(await _internal.mayJoin({ ...student, mode: "offline" }, `offline_english_stage1_class_${today}_v3`), true);
+  // 🎓 promoted to stage 2 → stage 1 live class is closed, stage 2 open; dropout → nothing
+  const promoted = { ...student, englishAccess: { stage2: true }, englishDone: { stage1: true } };
+  assert.equal(await _internal.mayJoin(promoted, `english_stage1_seca_class_${today}_v3`), false);
+  assert.equal(await _internal.mayJoin(promoted, `english_stage2_seca_class_${today}_v3`), true);
+  assert.equal(await _internal.mayJoin({ ...student, isDropout: true }, `english_stage1_seca_class_${today}_v3`), false);
 });
 
 test("offline → online for some stages only: other stages stay offline", async () => {
@@ -73,7 +78,7 @@ test("offline → online for some stages only: other stages stay offline", async
 
   cm._prime({ rain: { active: true, stages: ["stage1"] } });
   const { _internal } = require("../Controllers/UserContollers/rtcController");
-  const off = { role: "student", mode: "offline", onlineSection: "" };
+  const off = { role: "student", mode: "offline", onlineSection: "", englishAccess: { stage1: true, stage2: true, stage3: true }, hindiAccess: { stage1: true } };
   assert.equal(await _internal.mayJoin(off, `offline_english_stage1_class_${today}_v3`), true);
   assert.equal(await _internal.mayJoin(off, `offline_english_stage2_class_${today}_v3`), false);
   cm.invalidate();

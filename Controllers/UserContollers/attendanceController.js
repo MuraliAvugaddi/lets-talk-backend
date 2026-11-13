@@ -1,4 +1,5 @@
 const Attendance = require("../../Models/attendance");
+const { liveBlockReason, isLive } = require("../../utils/stageAccess");
 const User = require("../../Models/users");
 const SectionMerge = require("../../Models/sectionMerge");
 const {
@@ -183,7 +184,18 @@ const markAttendance = async (req, res) => {
     const now = new Date();
     const date = dateKey(now);
     const stage = normStage(req.body.stage) || normStage(user.teacherStage) || "stage1";
-    const language = normLanguage(req.body.language) || user.language || "English";
+    // older apps send no language → use the course where this stage is the student's CURRENT stage
+    const language =
+      normLanguage(req.body.language) ||
+      (user.role === "student" && !isLive(user, user.language || "English", stage) && isLive(user, user.language === "Hindi" ? "English" : "Hindi", stage)
+        ? (user.language === "Hindi" ? "English" : "Hindi")
+        : null) ||
+      user.language ||
+      "English";
+
+    // 🎓 finished stage / dropout → study material only, no attendance
+    const blocked = liveBlockReason(user, language, stage);
+    if (blocked) return res.status(403).json({ message: blocked, code: "STAGE_NOT_LIVE" });
 
     // Trainers: morning + afternoon = two check-ins a day
     const shiftInfo = shiftFieldsFor(user, now);
@@ -262,9 +274,14 @@ const joinOnlineClass = async (req, res) => {
     const batchTime = resolveBatch(user, req.body.batchStartTime || req.body.batchTime, language, stage);
 
     const modes = await getModes();
+    const wantsAssembly = !!(modes.assembly && (req.body.assembly === true || req.body.assembly === "true"));
+
+    // 🎓 finished stage / dropout → study material only, no live class
+    const blocked = liveBlockReason(user, language, stage, { assembly: wantsAssembly });
+    if (blocked) return res.status(403).json({ message: blocked, code: "STAGE_NOT_LIVE" });
 
     // 🎙 PRINCIPAL CLASS: one join marks attendance for EVERY stage the student has
-    if (modes.assembly && (req.body.assembly === true || req.body.assembly === "true")) {
+    if (wantsAssembly) {
       return joinAssembly(req, res, user, modes.assembly, { language, stage, now, date });
     }
 

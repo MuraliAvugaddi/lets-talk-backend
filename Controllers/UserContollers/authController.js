@@ -31,6 +31,7 @@ const {
 const PUBLIC_FIELDS = "-password -sessionToken -fcmTokens";
 const notify = require("../../utils/notify");
 const push = require("../../utils/push");
+const stageAccess = require("../../utils/stageAccess");
 
 const cleanPhone = (phone) => String(phone || "").replace(/\D/g, "").slice(-10);
 
@@ -56,6 +57,9 @@ const toPublicUser = (user) => ({
   hindiBatch: user.hindiBatch,
   englishAccess: user.englishAccess,
   hindiAccess: user.hindiAccess,
+  englishDone: user.englishDone,
+  hindiDone: user.hindiDone,
+  isDropout: !!user.isDropout,
   feeStatus: user.feeStatus,
   modeBase: user.modeBase || "",
   modeTempUntil: user.modeTempUntil || null,
@@ -73,9 +77,10 @@ const resetMonthlyFeesForNewMonth = async () => {
   try {
     const prevMonthYear = monthKey(new Date(), -1);
 
+    // dropouts pay no fees → not counted
     const [totalStudents, totalPaid] = await Promise.all([
-      User.countDocuments({ role: "student" }),
-      User.countDocuments({ role: "student", feeStatus: "paid" }),
+      User.countDocuments({ role: "student", isDropout: { $ne: true } }),
+      User.countDocuments({ role: "student", isDropout: { $ne: true }, feeStatus: "paid" }),
     ]);
 
     await FeeHistory.findOneAndUpdate(
@@ -410,6 +415,12 @@ const updateUserAccess = async (req, res) => {
     const hindi = cleanAccessMap(req.body.hindiAccess);
     if (english) user.englishAccess = english;
     if (hindi) user.hindiAccess = hindi;
+    // ✅ finished stages (material only). A stage switched ON again is current again → not "done".
+    const englishDone = cleanAccessMap(req.body.englishDone);
+    const hindiDone = cleanAccessMap(req.body.hindiDone);
+    if (englishDone) user.englishDone = englishDone;
+    if (hindiDone) user.hindiDone = hindiDone;
+    stageAccess.tidy(user);
     if (normMode(mode)) user.mode = normMode(mode);
     if (onlineSection) user.onlineSection = normSection(onlineSection);
     // Admin app sends access + timings together, so the clash check sees the NEW timings
@@ -428,6 +439,8 @@ const updateUserAccess = async (req, res) => {
       req.io.to(String(user._id)).emit("permissions_updated", {
         englishAccess: user.englishAccess,
         hindiAccess: user.hindiAccess,
+        englishDone: user.englishDone,
+        hindiDone: user.hindiDone,
         englishBatch: user.englishBatch,
         hindiBatch: user.hindiBatch,
         mode: user.mode,
@@ -672,4 +685,5 @@ module.exports = {
   getBatches,
   updateMyBatchTime,
   resetMonthlyFeesForNewMonth,
+  toPublicUser,
 };

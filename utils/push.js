@@ -98,7 +98,8 @@ const syncTopics = async (user) => {
   if (!m || !user || user.role !== "student") return;
   const tokens = user.fcmTokens || [];
   if (!tokens.length) return;
-  const want = new Set(["students", topicForMode(user.mode)]);
+  // dropout → no class / fee / notice pushes at all (topics removed) until the admin rejoins them
+  const want = new Set(user.isDropout ? [] : ["students", topicForMode(user.mode)]);
   try {
     for (const t of TOPICS) {
       if (want.has(t)) await m.subscribeToTopic(tokens, t);
