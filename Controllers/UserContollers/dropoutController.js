@@ -18,6 +18,7 @@ const Result = require("../../Models/result");
 const { normLanguage, normStage, isValidId, escapeRegex, isAll } = require("../../utils/normalize");
 const { STAGES, allOff, plain } = require("../../utils/stageAccess");
 const push = require("../../utils/push");
+const trainerAlerts = require("../../utils/trainerAlerts"); // 👋 trainers see the student is back
 const merge = (a, b) => Object.fromEntries(STAGES.map((s) => [s, plain(a)[s] || plain(b)[s]]));
 
 /** Unpaid months up to this month (0 when paid). Never paid → counted from the joining month. */
@@ -135,6 +136,7 @@ const rejoinDropout = async (req, res) => {
     user.droppedAt = null;
     await user.save();
     push.later(() => push.syncTopics(user)); // 🔔 notifications back on
+    trainerAlerts.studentAdded(req, user, [], "rejoined");
 
     drop.status = "rejoined";
     drop.rejoinedAt = new Date();

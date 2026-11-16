@@ -21,6 +21,7 @@ const { normLanguage, normStage, isValidId, escapeRegex, isAll, normSection } = 
 const { findBatchConflict, emptyBatchMap } = require("../../utils/batches");
 const sa = require("../../utils/stageAccess");
 const notify = require("../../utils/notify");
+const trainerAlerts = require("../../utils/trainerAlerts"); // 👋 tell the new stage's trainers
 
 const MAX = 500;
 
@@ -165,6 +166,7 @@ const promoteStudents = async (req, res) => {
         skipped.push({ id: String(user._id), name: user.name, reason: "Dropout — rejoin first" });
         continue;
       }
+      const classesBefore = trainerAlerts.classesOf(user);
       const r = promoteOne(user, language, stage);
       if (r.error) {
         skipped.push({ id: String(user._id), name: user.name, reason: r.error });
@@ -190,6 +192,7 @@ const promoteStudents = async (req, res) => {
         });
         req.io.to("admin_room").emit("student_update", { userId: String(user._id), by: "admin", user: publicUser(user) });
       }
+      trainerAlerts.studentAdded(req, user, classesBefore, "promoted");
       if (r.to) notify.stageUnlocked(user._id, language, [Number(r.to.replace("stage", ""))]);
       else notify.courseFinished(user._id, language);
     }

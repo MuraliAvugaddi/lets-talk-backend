@@ -87,6 +87,7 @@ const {
   dropoutDetail,
 } = require("../../Controllers/UserContollers/dropoutController");
 const { promoteCandidates, promoteStudents } = require("../../Controllers/UserContollers/promotionController");
+const { listMyAlerts, markAlertsRead } = require("../../Controllers/UserContollers/trainerAlertController");
 
 const { auth, requireAuth } = require("../../middleware/authMiddleware");
 const { loginLimiter, resetLimiter, registerLimiter, otpLimiter, otpVerifyLimiter } = require("../../middleware/rateLimit");
@@ -142,6 +143,10 @@ router.get("/admin/dropout", requireAuth(...ADMIN), dropoutDetail);
 // 🎓 promote: old stage → finished (material only), next stage → current (live class)
 router.get("/admin/promote/candidates", requireAuth(...ADMIN), promoteCandidates);
 router.post("/admin/promote", requireAuth(...ADMIN), promoteStudents);
+
+// 👋 trainer bell: "new student in your class"
+router.get("/trainer/alerts", requireAuth(...STAFF), listMyAlerts);
+router.post("/trainer/alerts/read", requireAuth(...STAFF), markAlertsRead);
 router.delete("/users/:id", requireAuth(), deleteUser); // students: self only (checked inside)
 router.get("/admin/users-by-stage", auth(...STAFF), getUsersByStage);
 router.get("/admin/teachers", auth(...ADMIN), getAllTeachersFiltered);

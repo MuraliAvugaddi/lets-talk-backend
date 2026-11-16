@@ -16,6 +16,7 @@
 const User = require("../../Models/users");
 const ModeChange = require("../../Models/modeChange");
 const notify = require("../../utils/notify");
+const trainerAlerts = require("../../utils/trainerAlerts"); // 👋 online ↔ offline → the other trainers
 const { dateKey, istDayRange, istMinutesOfDay } = require("../../utils/time");
 const { normMode, normLanguage, normStage, isValidId, escapeRegex, isAll } = require("../../utils/normalize");
 
@@ -82,6 +83,7 @@ const changeMode = async (req, res) => {
     if (!user || user.role !== "student") return res.status(404).json({ message: "Student not found" });
 
     const from = user.mode;
+    const classesBefore = trainerAlerts.classesOf(user);
     const base = user.modeBase || user.mode; // already temporary → keep the real normal mode
     let until = null;
     let message = "";
@@ -124,6 +126,8 @@ const changeMode = async (req, res) => {
     });
 
     if (from !== user.mode || duration !== "permanent") broadcast(req.io, user, message);
+    // 👋 new trainers get told — with the time period if it is only for some days
+    if (from !== user.mode) trainerAlerts.studentAdded(req, user, classesBefore, "mode", until ? { duration, until } : null);
 
     res.status(200).json({
       message:

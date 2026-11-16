@@ -30,6 +30,7 @@ const {
 
 const PUBLIC_FIELDS = "-password -sessionToken -fcmTokens";
 const notify = require("../../utils/notify");
+const trainerAlerts = require("../../utils/trainerAlerts"); // 👋 tell trainers about new students
 const push = require("../../utils/push");
 const stageAccess = require("../../utils/stageAccess");
 
@@ -405,6 +406,7 @@ const updateUserAccess = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     // remember what the student had → notify only what is NEW
+    const classesBefore = trainerAlerts.classesOf(user);
     const before = {
       mode: user.mode,
       english: { ...(user.englishAccess?.toObject?.() || user.englishAccess || {}) },
@@ -455,6 +457,8 @@ const updateUserAccess = async (req, res) => {
     notify.stageUnlocked(user._id, "English", opened(before.english, user.englishAccess));
     notify.stageUnlocked(user._id, "Hindi", opened(before.hindi, user.hindiAccess));
     if (before.mode !== user.mode) notify.modeChanged(user);
+    // 👋 trainers of the new class: "Online manager … added Venkat to your class"
+    trainerAlerts.studentAdded(req, user, classesBefore, "added");
 
     const out = user.toObject();
     delete out.password;
