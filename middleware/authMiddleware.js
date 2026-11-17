@@ -21,7 +21,7 @@ const getJwtSecret = () => {
 
 const signToken = (user) =>
   jwt.sign({ id: String(user._id), role: user.role }, getJwtSecret(), {
-    expiresIn: process.env.JWT_EXPIRES_IN || "90d",
+    expiresIn: process.env.JWT_EXPIRES_IN || "365d",
   });
 
 const readBearer = (req) => {

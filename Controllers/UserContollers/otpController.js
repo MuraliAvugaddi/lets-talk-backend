@@ -15,6 +15,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const OtpCode = require("../../Models/otpCode");
 const User = require("../../Models/users");
+const { sideFilter } = require("../../utils/accountSide");
 const { sendOtpSms } = require("../../utils/msg91");
 const messageCentral = require("../../utils/messageCentral");
 
@@ -91,7 +92,9 @@ const sendOtp = async (req, res) => {
     }
     if (!PURPOSES.includes(purpose)) return res.status(400).json({ message: "Invalid request." });
 
-    const exists = await User.exists({ phone: { $in: phoneCandidates(phone) } });
+    // 👥 signup / change happen in the STUDENT app → only a student account blocks the number
+    //    (a trainer may also make a student account on their own number)
+    const exists = await User.exists({ phone: { $in: phoneCandidates(phone) }, ...sideFilter("student") });
     if (purpose === "signup" && exists) {
       return res.status(409).json({ message: "This number is already registered. Please log in." });
     }

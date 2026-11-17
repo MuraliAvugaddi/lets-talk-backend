@@ -33,6 +33,7 @@ const notify = require("../../utils/notify");
 const trainerAlerts = require("../../utils/trainerAlerts"); // 👋 tell trainers about new students
 const push = require("../../utils/push");
 const stageAccess = require("../../utils/stageAccess");
+const { sideOfRole, appSide, sideFilter } = require("../../utils/accountSide"); // 👥 student + trainer on one number
 
 const cleanPhone = (phone) => String(phone || "").replace(/\D/g, "").slice(-10);
 
@@ -149,9 +150,18 @@ const registerUser = async (req, res) => {
       }
     }
 
-    const userExists = await User.findOne({ phone: { $in: phoneCandidates(req.body.phone) } }).select("_id").lean();
+    // 👥 a trainer may ALSO have a student account on the same number (and the other way round),
+    //    but never two students or two staff accounts on one number
+    const side = sideOfRole(requestedRole);
+    const userExists = await User.findOne({ phone: { $in: phoneCandidates(req.body.phone) }, ...sideFilter(side) })
+      .select("_id")
+      .lean();
     if (userExists) {
-      return res.status(400).json({ message: "User with this phone number already exists." });
+      return res.status(400).json({
+        message: side === "student"
+          ? "A student account with this phone number already exists. Please log in."
+          : "A staff account with this phone number already exists.",
+      });
     }
 
     const hashedPassword = await bcrypt.hash(String(password), 10);
@@ -195,6 +205,15 @@ const registerUser = async (req, res) => {
 // =====================================================
 // LOGIN
 // =====================================================
+// student app → student account, trainer / manager app → staff account.
+// That account doesn't exist → the other one (same as before: trainers could open the student app).
+// Old apps (no "app") → staff account first (student accounts on a trainer's number are new).
+const pickLogin = (matching, side) => {
+  if (!matching.length) return null;
+  const want = side || "staff";
+  return matching.find((u) => sideOfRole(u.role) === want) || matching[0];
+};
+
 const loginUser = async (req, res) => {
   try {
     const phone = cleanPhone(req.body.phone);
@@ -203,9 +222,14 @@ const loginUser = async (req, res) => {
       return res.status(400).json({ message: "Please provide phone and password" });
     }
 
-    const user = await User.findOne({ phone: { $in: phoneCandidates(req.body.phone) } });
-    const ok = user && (await bcrypt.compare(String(password), user.password));
-    if (!ok) {
+    // 👥 one number can have a student AND a trainer account → pick the one for this app
+    const accounts = await User.find({ phone: { $in: phoneCandidates(req.body.phone) } });
+    const matching = [];
+    for (const a of accounts) {
+      if (await bcrypt.compare(String(password), a.password)) matching.push(a);
+    }
+    const user = pickLogin(matching, appSide(req));
+    if (!user) {
       return res.status(401).json({ message: "Invalid phone number or password" });
     }
 
@@ -250,12 +274,20 @@ const resetPassword = async (req, res) => {
       return res.status(403).json({ message: "Verified phone number does not match this account." });
     }
 
-    const user = await User.findOne({ phone: { $in: phoneCandidates(req.body.phone) } });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    // 👥 student + trainer on one number: student app → student account only, trainer app → staff only.
+    //    Old app (no "app") → every account on this (OTP-verified) number.
+    const side = appSide(req);
+    const all = await User.find({ phone: { $in: phoneCandidates(req.body.phone) } });
+    let users = side ? all.filter((u) => sideOfRole(u.role) === side) : all;
+    if (!users.length) users = all;
+    if (!users.length) return res.status(404).json({ message: "User not found" });
 
-    user.password = await bcrypt.hash(String(newPassword), 10);
-    user.sessionToken = ""; // invalidate single-device sessions if enabled later
-    await user.save();
+    const hashed = await bcrypt.hash(String(newPassword), 10);
+    for (const user of users) {
+      user.password = hashed;
+      user.sessionToken = ""; // invalidate single-device sessions if enabled later
+      await user.save();
+    }
 
     res.status(200).json({ message: "Password reset successfully" });
   } catch (error) {

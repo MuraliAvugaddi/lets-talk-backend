@@ -207,6 +207,7 @@ const runStartupMigrations = async () => {
     console.warn(`⚠️ TTL index check: ${err.message}`);
   }
   await drop("attendances", "userId_1_stage_1_date_1_batchTime_1", "replaced by index that includes language");
+  await drop("users", "phone_1", "same number may now have a student AND a trainer account (phone_1_role_1)");
 
   // Build the new indexes defined in the models
   for (const name of ["User", "Attendance", "Result", "Test"]) {

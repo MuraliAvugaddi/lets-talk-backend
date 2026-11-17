@@ -24,7 +24,8 @@ const batchShape = {
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    phone: { type: String, required: true, unique: true, trim: true },
+    // 👥 same phone may have 1 student + 1 staff account → unique per (phone, role), see index below
+    phone: { type: String, required: true, trim: true },
     password: { type: String, required: true },
     mode: { type: String, enum: ["online", "offline"], required: true },
     // 🔁 Temporary mode change (admin: "online for 2 days"). modeBase = the student's
@@ -94,6 +95,7 @@ userSchema.post(["updateOne", "findOneAndUpdate", "replaceOne"], function () {
 });
 userSchema.post(["updateMany", "deleteMany", "bulkWrite"], () => userCache.clearAll());
 
+userSchema.index({ phone: 1, role: 1 }, { unique: true }); // 👥 one student + one trainer account per number
 userSchema.index({ role: 1, mode: 1 });
 userSchema.index({ feePaymentStatus: 1 });
 userSchema.index({ role: 1, onlineSection: 1 });

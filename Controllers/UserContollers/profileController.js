@@ -17,6 +17,7 @@ const User = require("../../Models/users");
 const { verifyOtpToken } = require("./otpController");
 const { uploadProfilePhoto, deleteFromCloudinary } = require("../../utils/cloudinary");
 const { isValidId, normLanguage, normMode, normStage, normSection } = require("../../utils/normalize");
+const { sideOfRole, sideFilter } = require("../../utils/accountSide"); // 👥 student + trainer on one number
 
 const PUBLIC_FIELDS = "-password -sessionToken -fcmTokens";
 
@@ -104,7 +105,7 @@ const changeMyPhone = async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ message: "Account not found" });
     if (cleanPhone(user.phone) === phone) return res.status(400).json({ message: "This is already your number" });
-    const taken = await User.exists({ _id: { $ne: user._id }, phone: { $in: phoneCandidates(phone) } });
+    const taken = await User.exists({ _id: { $ne: user._id }, phone: { $in: phoneCandidates(phone) }, ...sideFilter(sideOfRole(user.role)) });
     if (taken) return res.status(409).json({ message: "This number is already used by another account." });
 
     user.phone = phone;
@@ -134,7 +135,7 @@ const updateStaff = async (req, res) => {
     if (req.body.phone !== undefined && cleanPhone(req.body.phone) !== cleanPhone(staff.phone)) {
       const phone = cleanPhone(req.body.phone);
       if (phone.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
-      const taken = await User.exists({ _id: { $ne: staff._id }, phone: { $in: phoneCandidates(phone) } });
+      const taken = await User.exists({ _id: { $ne: staff._id }, phone: { $in: phoneCandidates(phone) }, ...sideFilter("staff") });
       if (taken) return res.status(409).json({ message: "This phone number is already used by another account" });
       staff.phone = phone;
     }
