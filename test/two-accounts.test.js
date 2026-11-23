@@ -88,7 +88,14 @@ test("different passwords pick the right account even in old apps", async () => 
   assert.equal(bad.status, 401);
 });
 
-test("trainer without a student account can still open the student app", async () => {
-  const s = await (await call("/api/login", { phone: "9876543210", password: "trainer1", app: "student" })).json();
-  assert.equal(s.role, "teacher");
+test("trainer without a student account gets a clear message in the student app", async () => {
+  const r = await call("/api/login", { phone: "9876543210", password: "trainer1", app: "student" });
+  assert.equal(r.status, 403);
+  assert.match((await r.json()).message, /Trainer app/);
+});
+
+test("student account cannot log in to the trainer app", async () => {
+  db.push({ _id: "s9", name: "Sita", phone: "9000000009", role: "student", password: await bcrypt.hash("student9", 4) });
+  const r = await call("/api/login", { phone: "9000000009", password: "student9", app: "trainer" });
+  assert.equal(r.status, 403);
 });

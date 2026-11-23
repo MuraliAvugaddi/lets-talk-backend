@@ -210,8 +210,10 @@ const registerUser = async (req, res) => {
 // Old apps (no "app") → staff account first (student accounts on a trainer's number are new).
 const pickLogin = (matching, side) => {
   if (!matching.length) return null;
-  const want = side || "staff";
-  return matching.find((u) => sideOfRole(u.role) === want) || matching[0];
+  // 🔒 student app → only a student account; trainer/manager app → only a staff account
+  if (side) return matching.find((u) => sideOfRole(u.role) === side) || null;
+  // old app versions (no "app" field) → staff first, like before
+  return matching.find((u) => sideOfRole(u.role) === "staff") || matching[0];
 };
 
 const loginUser = async (req, res) => {
@@ -228,8 +230,18 @@ const loginUser = async (req, res) => {
     for (const a of accounts) {
       if (await bcrypt.compare(String(password), a.password)) matching.push(a);
     }
-    const user = pickLogin(matching, appSide(req));
+    const side = appSide(req);
+    const user = pickLogin(matching, side);
     if (!user) {
+      // right password, but the account belongs to the other app
+      if (matching.length && side === "student") {
+        return res.status(403).json({
+          message: "This number is a trainer/staff account. Please use the Trainer app, or create a student account with this number.",
+        });
+      }
+      if (matching.length && side === "staff") {
+        return res.status(403).json({ message: "This number is a student account. Please use the Let's Speak student app." });
+      }
       return res.status(401).json({ message: "Invalid phone number or password" });
     }
 
