@@ -51,3 +51,19 @@ test("Message Central: US number (starts 2-5) is sent with country code 1", asyn
   await call(otp.sendOtp, { phone: "9876512345", purpose: "signup" });
   assert.equal(got.cc, "91");
 });
+
+test("Message Central: all countries — mapped numbers sent with their code, unknown refused", async () => {
+  process.env.OTP_COUNTRY_MAP = "0501234567=971,7400123456=44,6581234567=65-81234567";
+  const sent = [];
+  mc.sendOtp = async (phone, len, cc) => { sent.push(`+${cc} ${phone}`); return { ok: true, ref: "VID-X" + sent.length }; };
+  for (const p of ["0501234567", "07400 123456", "65 8123 4567", "4155550100", "9876500001"]) {
+    const r = await call(otp.sendOtp, { phone: p, purpose: "signup" });
+    assert.equal(r.code, 200, p);
+  }
+  assert.deepEqual(sent, ["+971 501234567", "+44 7400123456", "+65 81234567", "+1 4155550100", "+91 9876500001"]);
+  const refused = await call(otp.sendOtp, { phone: "0509999999", purpose: "signup" });
+  assert.equal(refused.code, 400);
+  assert.match(refused.body.message, /contact the institute/);
+  assert.equal(sent.length, 5); // no SMS for the unknown number
+  delete process.env.OTP_COUNTRY_MAP;
+});

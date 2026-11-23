@@ -18,7 +18,7 @@ const User = require("../../Models/users");
 const { sideFilter } = require("../../utils/accountSide");
 const { sendOtpSms } = require("../../utils/msg91");
 const messageCentral = require("../../utils/messageCentral");
-const { countryCodeFor } = require("../../utils/phoneCountry"); // 🌍 +91 / +1 / others
+const { destinationFor } = require("../../utils/phoneCountry"); // 🌍 +91 / +1 / any country (api.env)
 
 // Which SMS company sends the OTP:
 //   OTP_PROVIDER=messagecentral → Message Central (no own DLT needed)
@@ -88,9 +88,17 @@ const sendOtp = async (req, res) => {
   try {
     const phone = cleanPhone(req.body.phone);
     const purpose = String(req.body.purpose || "").toLowerCase();
-    // 🇮🇳 Indian mobiles start with 6-9; foreign numbers (USA +1 etc.) see utils/phoneCountry.js
-    if (phone.length !== 10 || (!/^[6-9]/.test(phone) && countryCodeFor(phone) === "91")) {
+    if (phone.length !== 10) {
       return res.status(400).json({ message: "Enter a valid 10-digit mobile number." });
+    }
+    // 🌍 India / USA automatic; other countries must be added in api.env (utils/phoneCountry.js)
+    const dest = destinationFor(phone);
+    // unknown country + sign-up + backup code set → no SMS, the student uses the institute's Plan B code
+    const planBOnly = !dest && !testNumbers().has(phone) && String(req.body.purpose || "").toLowerCase() === "signup" && !!signupFallbackCode();
+    if (!dest && !testNumbers().has(phone) && !planBOnly) {
+      return res.status(400).json({
+        message: "OTP for numbers outside India / USA is set up by the institute. Please contact the institute with your number and country.",
+      });
     }
     if (!PURPOSES.includes(purpose)) return res.status(400).json({ message: "Invalid request." });
 
@@ -126,17 +134,21 @@ const sendOtp = async (req, res) => {
     let otp = test || randomOtp();
     let providerRef = "";
 
-    if (!test) {
+    if (planBOnly) {
+      otp = signupFallbackCode(); // no SMS to an unknown country
+      console.warn(`🅱️ Unknown country ${phone.slice(0, 2)}******${phone.slice(-2)} → sign-up with backup code only`);
+    } else if (!test) {
       let sent;
       if (provider() === "messagecentral" && !module.exports._send) {
         // Message Central creates + checks the code itself
-        const cc = countryCodeFor(phone);
-        if (cc !== "91") console.log(`🌍 OTP to +${cc} ${phone.slice(0, 2)}******${phone.slice(-2)}`);
-        sent = await messageCentral.sendOtp(phone, OTP_LENGTH, cc);
+        if (dest.cc !== "91") console.log(`🌍 OTP to +${dest.cc} ${dest.number.slice(0, 2)}******${dest.number.slice(-2)}`);
+        sent = await messageCentral.sendOtp(dest.number, OTP_LENGTH, dest.cc);
         if (sent.ok) {
           providerRef = sent.ref;
           otp = "";
         }
+      } else if (dest.cc !== "91" && !module.exports._send) {
+        sent = { ok: false, error: "MSG91 sends only to India" }; // foreign numbers need OTP_PROVIDER=messagecentral
       } else {
         sent = await (module.exports._send || sendOtpSms)(phone, otp, EXPIRY_MIN);
       }
@@ -175,7 +187,9 @@ const sendOtp = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: `Code sent to +91 ${phone.slice(0, 2)}******${phone.slice(-2)}`,
+      message: planBOnly
+        ? "We can't send an SMS to this country yet. Enter the code given by the institute."
+        : `Code sent to +${(dest && dest.cc) || "91"} ${phone.slice(0, 2)}******${phone.slice(-2)}`,
       expiresIn: EXPIRY_MIN * 60,
       resendIn: RESEND_SEC,
       length: OTP_LENGTH,
@@ -210,7 +224,13 @@ const verifyOtp = async (req, res) => {
     }
 
     let correct;
-    if (rec.providerRef) {
+    // 🅱️ Plan B for SIGN-UP only: SMS didn't arrive → the institute's backup code also works
+    //    (api.env: OTP_SIGNUP_FALLBACK_CODE=939831 · change it often · never works for password reset)
+    const backup = signupFallbackCode();
+    if (purpose === "signup" && backup && otp === backup) {
+      correct = true;
+      console.warn(`🅱️ Backup sign-up code used for ${phone.slice(0, 2)}******${phone.slice(-2)}`);
+    } else if (rec.providerRef) {
       const r = await messageCentral.verifyOtp(rec.providerRef, otp);
       if (r === "expired") {
         return res.status(400).json({ message: "This code has expired. Tap Resend to get a new one.", expired: true });
