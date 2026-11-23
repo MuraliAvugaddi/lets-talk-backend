@@ -41,3 +41,13 @@ test("Message Central: send stores verificationId, verify asks them", async () =
   assert.equal(ok.code, 200);
   assert.ok(ok.body.otpToken);
 });
+
+test("Message Central: US number (starts 2-5) is sent with country code 1", async () => {
+  let got = null;
+  mc.sendOtp = async (phone, len, cc) => { got = { phone, cc }; return { ok: true, ref: "VID-US" }; };
+  const s = await call(otp.sendOtp, { phone: "+1 (202) 555-0123", purpose: "signup" });
+  assert.equal(s.code, 200);
+  assert.deepEqual(got, { phone: "2025550123", cc: "1" });
+  await call(otp.sendOtp, { phone: "9876512345", purpose: "signup" });
+  assert.equal(got.cc, "91");
+});

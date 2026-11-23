@@ -18,6 +18,7 @@ const User = require("../../Models/users");
 const { sideFilter } = require("../../utils/accountSide");
 const { sendOtpSms } = require("../../utils/msg91");
 const messageCentral = require("../../utils/messageCentral");
+const { countryCodeFor } = require("../../utils/phoneCountry"); // 🌍 +91 / +1 / others
 
 // Which SMS company sends the OTP:
 //   OTP_PROVIDER=messagecentral → Message Central (no own DLT needed)
@@ -87,7 +88,8 @@ const sendOtp = async (req, res) => {
   try {
     const phone = cleanPhone(req.body.phone);
     const purpose = String(req.body.purpose || "").toLowerCase();
-    if (phone.length !== 10 || !/^[6-9]/.test(phone)) {
+    // 🇮🇳 Indian mobiles start with 6-9; foreign numbers (USA +1 etc.) see utils/phoneCountry.js
+    if (phone.length !== 10 || (!/^[6-9]/.test(phone) && countryCodeFor(phone) === "91")) {
       return res.status(400).json({ message: "Enter a valid 10-digit mobile number." });
     }
     if (!PURPOSES.includes(purpose)) return res.status(400).json({ message: "Invalid request." });
@@ -128,7 +130,9 @@ const sendOtp = async (req, res) => {
       let sent;
       if (provider() === "messagecentral" && !module.exports._send) {
         // Message Central creates + checks the code itself
-        sent = await messageCentral.sendOtp(phone, OTP_LENGTH);
+        const cc = countryCodeFor(phone);
+        if (cc !== "91") console.log(`🌍 OTP to +${cc} ${phone.slice(0, 2)}******${phone.slice(-2)}`);
+        sent = await messageCentral.sendOtp(phone, OTP_LENGTH, cc);
         if (sent.ok) {
           providerRef = sent.ref;
           otp = "";

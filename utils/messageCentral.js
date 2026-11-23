@@ -44,11 +44,12 @@ const getToken = async (force = false) => {
 };
 
 /** Sends an OTP. Returns { ok, ref (verificationId), error } */
-const sendOtp = async (phone10, length = 6) => {
+const sendOtp = async (phone10, length = 6, countryCode = "91") => {
+  const cc = String(countryCode || "91").replace(/\D/g, "") || "91";
   const send = async (force) => {
     const t = await getToken(force);
     const url =
-      `${BASE}/verification/v3/send?countryCode=91&customerId=${encodeURIComponent(process.env.MC_CUSTOMER_ID)}` +
+      `${BASE}/verification/v3/send?countryCode=${cc}&customerId=${encodeURIComponent(process.env.MC_CUSTOMER_ID)}` +
       `&flowType=SMS&mobileNumber=${phone10}&otpLength=${length}`;
     return call(url, { method: "POST", headers: { authToken: t } });
   };
