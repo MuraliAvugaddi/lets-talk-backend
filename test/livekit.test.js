@@ -83,3 +83,21 @@ test("offline → online for some stages only: other stages stay offline", async
   assert.equal(await _internal.mayJoin(off, `offline_english_stage2_class_${today}_v3`), false);
   cm.invalidate();
 });
+
+// 🔀 Hindi stage merge: Stage 1 merged into Stage 3 → a Stage 1 student may join Stage 3's room
+test("hindi stage merge: guest-stage student may join the host stage's room (not others)", async () => {
+  require("../utils/classMode")._prime({ rain: null });
+  const StageMerge = require("../Models/stageMerge");
+  const original = StageMerge.find;
+  StageMerge.find = () => ({ lean: async () => [{ _id: "m1", language: "Hindi", hostStage: "stage3", guestStage: "stage1", isActive: true }] });
+  try {
+    const { _internal } = require("../Controllers/UserContollers/rtcController");
+    const s1 = { role: "student", mode: "online", hindiAccess: { stage1: true } };
+    assert.equal(await _internal.mayJoin(s1, `hindi_stage3_class_${today}_v3`), true); // merged → allowed
+    assert.equal(await _internal.mayJoin(s1, `hindi_stage4_class_${today}_v3`), false); // not merged → no
+    const s2 = { role: "student", mode: "online", hindiAccess: { stage2: true } };
+    assert.equal(await _internal.mayJoin(s2, `hindi_stage3_class_${today}_v3`), false); // stage 2 not merged
+  } finally {
+    StageMerge.find = original;
+  }
+});

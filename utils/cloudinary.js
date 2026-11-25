@@ -98,4 +98,36 @@ const uploadProfilePhoto = (buffer) =>
     transformation: [{ width: 400, height: 400, crop: "fill", gravity: "face", quality: "auto", fetch_format: "auto" }],
   });
 
-module.exports = { uploadBufferToCloudinary, uploadPromoImage, uploadPromoVideo, deleteFromCloudinary, uploadProfilePhoto };
+// 📚 Study material PDF (kept exactly as uploaded — "raw" file)
+const uploadMaterialPdf = async (buffer, name) => {
+  const r = await uploadStream(buffer, {
+    folder: "lets_talk_materials",
+    resource_type: "raw",
+    public_id: `${name}_${Date.now()}.pdf`, // raw files keep the extension in the id
+    timeout: 300000,
+  });
+  return { url: r.secure_url, publicId: r.public_id, bytes: r.bytes || buffer.length };
+};
+
+// 🔐 Signed download link for a material PDF.
+// New Cloudinary accounts BLOCK normal PDF links (HTTP 401 "PDF delivery").
+// This link goes through Cloudinary's signed download API instead, so it works
+// even when PDF delivery is blocked. Valid for 12 hours (the app asks again).
+const materialDownloadUrl = (publicId, hours = 12) => {
+  if (!publicId) return "";
+  return cloudinary.utils.private_download_url(publicId, "", {
+    resource_type: "raw",
+    type: "upload",
+    expires_at: Math.floor(Date.now() / 1000) + hours * 3600,
+  });
+};
+
+module.exports = {
+  materialDownloadUrl,
+  uploadBufferToCloudinary,
+  uploadPromoImage,
+  uploadPromoVideo,
+  deleteFromCloudinary,
+  uploadProfilePhoto,
+  uploadMaterialPdf,
+};

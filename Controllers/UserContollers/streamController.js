@@ -5,6 +5,7 @@ const { getModes, rainCovers } = require("../../utils/classMode");
 const { ensureUser, addMember } = require("../../utils/streamBatch");
 const { dateKey } = require("../../utils/time");
 const { effectiveSection } = require("./sectionMergeController");
+const { effectiveHindiStage, stageName } = require("./hindiStageMergeController");
 const lk = require("../../utils/livekit");
 
 // Keys come ONLY from environment variables. The old secret was public on
@@ -244,9 +245,36 @@ const prepareCall = async (req, res) => {
       }
     }
 
+    // 🔀 HINDI STAGE MERGE (Hindi has no sections): Stage 2 merged into Stage 1 →
+    // Stage 2 students join Stage 1's call. Decided HERE, like the section merge.
+    let callStage = stage;
+    if (!rain && language === "Hindi" && type === "class") {
+      const staff = STAFF_ROLES.includes(user.role);
+      const eff = await effectiveHindiStage(stage);
+      if (staff && eff.mergedInto && user.role === "teacher") {
+        // Stage 2's Hindi trainer while Stage 2 is merged into Stage 1
+        return res.status(409).json({
+          error: `Hindi ${stageName(stage)} is merged into ${stageName(eff.mergedInto)} right now — your students are in ${stageName(eff.mergedInto)}'s class. Tap "I'm back — unmerge" to teach your own class.`,
+          merged: true,
+          mergedInto: stageName(eff.mergedInto),
+          mergeId: eff.mergeId,
+        });
+      }
+      if (!staff && eff.mergedInto) {
+        callStage = eff.stage;
+        merge = { ownStage: stage, stage: eff.stage, mergedInto: eff.mergedInto }; // app shows "Stage 1"
+      }
+    }
+
     const callId = rain
       ? buildOfflineCallId({ language, stage })
-      : buildCallId({ language, stage, section, type });
+      : buildCallId({ language, stage: callStage, section, type });
+
+    // 🔎 which class each person goes to (trainer and students must show the SAME id)
+    console.log(
+      `🎧 ${STAFF_ROLES.includes(user.role) ? "TRAINER" : "student"} ${user.name || user._id} • ${language} ${stage}` +
+        `${callStage !== stage ? ` (merged → ${callStage})` : ""} → ${callId}`
+    );
 
     if (STAFF_ROLES.includes(user.role)) {
       const ok = await hostCall(res, user, callId, { rain }, rtc);

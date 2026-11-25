@@ -2,6 +2,7 @@ const Attendance = require("../../Models/attendance");
 const { liveBlockReason, isLive } = require("../../utils/stageAccess");
 const User = require("../../Models/users");
 const SectionMerge = require("../../Models/sectionMerge");
+const { guestStagesOf, hostOfStage, stageName } = require("./hindiStageMergeController");
 const {
   dateKey,
   istMinutesOfDay,
@@ -209,6 +210,21 @@ const markAttendance = async (req, res) => {
       ...(shiftInfo ? { batchTime: shiftInfo.batchTime } : {}),
     }).lean();
 
+    // ✅ OFFLINE: was Late for one class, now checks in ON TIME for another class today → Present
+    if (existing && !shiftInfo && user.role === "student" && existing.status === "Late") {
+      const batchNow = offlineBatchFor(user, now, req.body.batchTime, language, stage);
+      const a = arrivalInfo(user, now, batchNow);
+      if (a.status === "Present") {
+        const record = await Attendance.findByIdAndUpdate(
+          existing._id,
+          { $set: { status: "Present", arrivalStatus: "Present", lateByMinutes: 0, batchTime: batchNow, markedAt: now, location: { lat, lng } } },
+          { returnDocument: "after" }
+        );
+        notify.attendance(userId, "Present", { language, stage, lateByMinutes: 0 });
+        return res.status(200).json({ message: `Marked as Present (${batchNow} class, on time)`, record, lateByMinutes: 0 });
+      }
+    }
+
     if (existing) {
       return res.status(200).json({
         message: `Already marked as ${existing.status}${shiftInfo ? ` (${shiftInfo.batchTime})` : ""}`,
@@ -343,10 +359,22 @@ const joinOnlineClass = async (req, res) => {
       record.userMode = user.mode === "offline" ? "offline" : "online";
       if (rainDay) record.classMode = "rain";
       if (!record.firstJoinAt) record.firstJoinAt = now;
+      let upgraded = false;
       if (!record.arrivalStatus || record.arrivalStatus === "Absent") {
         const a = arrivalInfo(user, now, arrivalBatch);
         record.arrivalStatus = a.status;
         record.lateByMinutes = a.lateByMinutes;
+      } else if (record.arrivalStatus === "Late" && user.role === "student") {
+        // ✅ Came late to one class (05:40 AM for 05:30) but joined ANOTHER class of
+        // the day ON TIME (06:30 PM class at 06:30) → the day counts as Present.
+        // (re-joining the same class later can never be "on time", so this only
+        //  happens for a new class that the student joined by start + 7 min)
+        const a = arrivalInfo(user, now, arrivalBatch);
+        if (a.status === "Present") {
+          record.arrivalStatus = "Present";
+          record.lateByMinutes = 0;
+          upgraded = true;
+        }
       }
       // Joining their OWN class later the same day clears the "other timing" mark
       if (!otherBatch && joinedBatch) {
@@ -358,6 +386,7 @@ const joinOnlineClass = async (req, res) => {
       }
       record.status = deriveOnlineStatus(record.totalMinutesSpent || 0, record.arrivalStatus);
       await record.save();
+      if (upgraded) notify.attendance(userId, "Present", { language, stage, lateByMinutes: 0 }); // 🔔 now on time
     } else {
       const a = arrivalInfo(user, now, arrivalBatch);
       const arrival = a.status;
@@ -1088,6 +1117,25 @@ const getTrainerClassroomRoster = async (req, res) => {
       studentQuery.onlineSection = { $in: [host, ...guestSections] };
     }
 
+    // 🔀 HINDI STAGE MERGE: Stage 2 (+3 …) students sit in this Stage 1 class today
+    let classStages = [stage];
+    if (isHindi) {
+      const [guests, mine] = await Promise.all([guestStagesOf(stage), hostOfStage(stage)]);
+      guestSections = guests.map(stageName); // ["Stage 2"] (shown by the trainer app)
+      if (mine) mergedInto = { id: String(mine._id), hostSection: stageName(mine.hostStage) };
+      if (guests.length) {
+        classStages = [stage, ...guests];
+        delete studentQuery[`hindiAccess.${stage}`];
+        studentQuery.$or = classStages.map((st) => ({ [`hindiAccess.${st}`]: true }));
+      }
+    }
+    // the student's OWN stage in this class (guests keep their own stage)
+    const ownStageOf = (s) => {
+      if (!isHindi || classStages.length === 1) return stage;
+      const a = s.hindiAccess || {};
+      return classStages.find((st) => a[st] === true) || stage;
+    };
+
     const batch = isAll(req.query.batchTime) ? null : normBatch(req.query.batchTime);
 
     const { end } = istDayRange(date);
@@ -1096,36 +1144,46 @@ const getTrainerClassroomRoster = async (req, res) => {
     const holidayStudents = await holidayFor(date, "student");
     // Trainers refresh this every 10 s → load only THIS class's records
     // (not every section's records of the stage).
-    const [students, practice] = await Promise.all([
+    const [students, practiceMaps] = await Promise.all([
       User.find(studentQuery).select("-password -sessionToken").lean(),
-      practiceIndex({ date, language, stage }),
+      Promise.all(classStages.map((st) => practiceIndex({ date, language, stage: st }))),
     ]);
+    const practice = new Map();
+    for (const m of practiceMaps) for (const [k, v] of m) practice.set(k, v);
     const records = students.length
       ? await Attendance.find({
           userId: { $in: students.map((s) => s._id) },
           date: { $in: legacyDateVariants(date) },
-          stage: { $in: stageVariants(stage) },
+          stage: { $in: classStages.flatMap((st) => stageVariants(st)) },
           language,
         }).lean()
       : [];
 
+    // key: user + stage (a merged Hindi student's record is in their own stage)
     const recordByUser = new Map();
     for (const r of records) {
-      const k = String(r.userId);
+      const k = `${r.userId}|${normStage(r.stage) || stage}`;
       recordByUser.set(k, pickBest(recordByUser.get(k), r));
     }
 
     const now = new Date();
     const roster = students
       // batchTime = the student's timing for THIS stage (Stage 1 at 5:30 AM, Stage 2 at 3:30 PM, ...)
-      .map((s) => ({ ...s, defaultBatchTime: s.batchTime || "", batchTime: stageBatch(s, language, stage) }))
+      .map((s) => {
+        const myStage = ownStageOf(s);
+        return { ...s, classStage: myStage, defaultBatchTime: s.batchTime || "", batchTime: stageBatch(s, language, myStage) };
+      })
       .filter((s) => !batch || s.batchTime === batch)
       .map((student) => {
-      const record = recordByUser.get(String(student._id));
-      const p = practice.get(`${student._id}|${stage}|${language}`);
+      const myStage = student.classStage;
+      const record = recordByUser.get(`${student._id}|${myStage}`);
+      const p = practice.get(`${student._id}|${myStage}|${language}`);
       const own = String(student.onlineSection || "").toUpperCase();
       const practiceInfo = {
-        mergedFrom: hostSection && own && own !== hostSection ? own : "", // "B" = joined from Section B today
+        // "B" = joined from Section B today / "Stage 2" = Hindi Stage 2 joined this class
+        mergedFrom: isHindi
+          ? (myStage !== stage ? stageName(myStage) : "")
+          : (hostSection && own && own !== hostSection ? own : ""),
         practiced: !!p,
         practicedAt: p ? p.practicedAt : null,
         practiceRating: p && p.rating ? p.rating : 0,

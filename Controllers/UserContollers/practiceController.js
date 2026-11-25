@@ -3,6 +3,19 @@ const User = require("../../Models/users");
 const { dateKey, normalizeDateKey } = require("../../utils/time");
 const { normStage, normLanguage, isAll, isValidId } = require("../../utils/normalize");
 
+// 🔀 Hindi stage merge: Stage 1's trainer rates a Stage 2 student → save in Stage 2
+// (lazy require: hindiStageMergeController loads users / models)
+const ownStageFor = async (studentId, language, stage) => {
+  if (language !== "Hindi") return stage;
+  try {
+    const { ownHindiStage } = require("./hindiStageMergeController");
+    const student = await User.findById(studentId).select("hindiAccess").lean();
+    return (await ownHindiStage(student, stage)) || stage;
+  } catch (_) {
+    return stage;
+  }
+};
+
 const cleanSection = (s, language) => {
   if (language === "Hindi") return "";
   const v = String(s || "").trim().toUpperCase();
@@ -30,8 +43,9 @@ const markPractice = async (req, res) => {
     if (!isValidId(studentId)) return res.status(400).json({ message: "Valid studentId required" });
 
     const language = normLanguage(req.body.language);
-    const stage = normStage(req.body.stage);
-    if (!language || !stage) return res.status(400).json({ message: "language and stage are required" });
+    const classStage = normStage(req.body.stage);
+    if (!language || !classStage) return res.status(400).json({ message: "language and stage are required" });
+    const stage = await ownStageFor(studentId, language, classStage);
 
     const date = dateKey();
     const key = { userId: studentId, date, language, stage };
@@ -82,8 +96,9 @@ const ratePractice = async (req, res) => {
     const { studentId } = req.body;
     if (!isValidId(studentId)) return res.status(400).json({ message: "Valid studentId required" });
     const language = normLanguage(req.body.language);
-    const stage = normStage(req.body.stage);
-    if (!language || !stage) return res.status(400).json({ message: "language and stage are required" });
+    const classStage = normStage(req.body.stage);
+    if (!language || !classStage) return res.status(400).json({ message: "language and stage are required" });
+    const stage = await ownStageFor(studentId, language, classStage);
     const rating = cleanRating(req.body.rating);
     if (!rating) return res.status(400).json({ message: "Rating must be 1 to 5" });
 

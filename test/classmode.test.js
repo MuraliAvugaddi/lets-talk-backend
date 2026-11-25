@@ -221,3 +221,49 @@ test("section merge: guest students join the host class, guest trainer is told, 
     SectionMerge.findOne = original;
   }
 });
+
+// 🔀 HINDI STAGE MERGE — Stage 2 merged into Stage 1: Stage 2 students join Stage 1's call
+test("hindi stage merge: guest stage joins the host stage's class, guest trainer is told, unmerge sends them back", async () => {
+  modes = { rain: null, assembly: null };
+  const StageMerge = require("../Models/stageMerge");
+  const original = StageMerge.find;
+  let rows = [{ _id: "h1", language: "Hindi", hostStage: "stage1", guestStage: "stage2", isActive: true }];
+  StageMerge.find = () => ({ lean: async () => rows });
+  try {
+    const trainer1 = { _id: "h1t", name: "S1 sir", role: "teacher", language: "Hindi", mode: "online", teacherStage: "stage1" };
+    const trainer2 = { _id: "h2t", name: "S2 mam", role: "teacher", language: "Hindi", mode: "online", teacherStage: "stage2" };
+    const student2 = { _id: "h2s", name: "Hema", role: "student", mode: "online", onlineSection: "" };
+
+    const host = await run(trainer1, { language: "Hindi", stage: "stage1", type: "class" });
+    assert.equal(host.code, 200);
+    assert.match(host.body.callId, /^hindi_stage1_class_/);
+
+    const s = await run(student2, { language: "Hindi", stage: "stage2", type: "class" });
+    assert.equal(s.body.callId, host.body.callId);
+    assert.equal(s.body.mergedInto, "stage1");
+    assert.equal(s.body.ownStage, "stage2");
+
+    // Stage 2's trainer can't open an empty Stage 2 class while merged
+    const t2 = await run(trainer2, { language: "Hindi", stage: "stage2", type: "class" });
+    assert.equal(t2.code, 409);
+    assert.equal(t2.body.mergedInto, "Stage 1");
+
+    // Stage 3 is not affected
+    const other = await run(student2, { language: "Hindi", stage: "stage3", type: "class" });
+    assert.match(other.body.callId, /^hindi_stage3_class_/);
+
+    // practice by Stage 1's trainer for a Stage 2 student is saved in Stage 2
+    const { ownHindiStage } = require("../Controllers/UserContollers/hindiStageMergeController");
+    assert.equal(await ownHindiStage({ hindiAccess: { stage2: true } }, "stage1"), "stage2");
+    assert.equal(await ownHindiStage({ hindiAccess: { stage1: true } }, "stage1"), "stage1");
+
+    // unmerged → back to Stage 2 (cache is 5 s, so wait it out like the server does)
+    rows = [];
+    await new Promise((r) => setTimeout(r, 5100));
+    const back = await run(student2, { language: "Hindi", stage: "stage2", type: "class" });
+    assert.match(back.body.callId, /^hindi_stage2_class_/);
+    assert.equal(back.body.mergedInto, undefined);
+  } finally {
+    StageMerge.find = original;
+  }
+});

@@ -14,6 +14,7 @@ const { getModes, rainCovers } = require("../../utils/classMode");
 const { dateKey } = require("../../utils/time");
 const { STAFF_ROLES, normSection } = require("../../utils/normalize");
 const { effectiveSection } = require("./sectionMergeController");
+const { guestStagesOf } = require("./hindiStageMergeController");
 
 const isStaff = (u) => !!u && STAFF_ROLES.includes(u.role);
 const { liveBlockReason } = require("../../utils/stageAccess");
@@ -33,7 +34,13 @@ const mayJoin = async (user, room) => {
   if (room.startsWith("assembly_")) return !liveBlockReason(user, "English", "stage1", { assembly: true }) && !!(await getModes()).assembly;
   // 🎓 finished stage / dropout → no live class (study material only)
   const rs = roomStage(room);
-  if (rs && liveBlockReason(user, rs.language, rs.stage)) return false;
+  if (rs && liveBlockReason(user, rs.language, rs.stage)) {
+    // 🔀 Hindi stage merge: a Stage 1 student may join Stage 3's class when
+    // Stage 1 is merged into Stage 3 today (checked with their OWN stage)
+    if (rs.language !== "Hindi" || room.startsWith("offline_")) return false;
+    const guests = await guestStagesOf(rs.stage);
+    if (!guests.some((g) => !liveBlockReason(user, "Hindi", g))) return false;
+  }
   if (room.startsWith("offline_")) {
     // only the stages the admin moved online today
     if (user.mode !== "offline") return false;
