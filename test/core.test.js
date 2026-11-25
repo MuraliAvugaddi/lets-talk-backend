@@ -53,14 +53,14 @@ test("student: on time = join by start + 7 min (05:30 class → by 05:37), compu
   assert.equal(f(ist(2026, 10, 15, 15, 41), "03:30 PM - 05:00 PM"), "Late");
 });
 
-test("trainer: morning 05:25–05:27 / afternoon 02:55–02:57 = Present, after = Late", () => {
+test("trainer: morning 05:25–05:27 / afternoon 03:25–03:27 = Present, after = Late", () => {
   const { evaluateTeacherStatus: f, arrivalInfo } = _internal;
   assert.equal(f(ist(2026, 10, 15, 5, 25)), "Present");
   assert.equal(f(ist(2026, 10, 15, 5, 27)), "Present");
   assert.equal(f(ist(2026, 10, 15, 5, 10)), "Present"); // early is fine
   assert.equal(f(ist(2026, 10, 15, 5, 28)), "Late");
-  assert.equal(f(ist(2026, 10, 15, 14, 56)), "Present");
-  assert.equal(f(ist(2026, 10, 15, 14, 58)), "Late");
+  assert.equal(f(ist(2026, 10, 15, 15, 27)), "Present");
+  assert.equal(f(ist(2026, 10, 15, 15, 28)), "Late");
   const t = arrivalInfo({ role: "teacher" }, ist(2026, 10, 15, 5, 34), null);
   assert.deepEqual(t, { status: "Late", lateByMinutes: 7 });
   const st = arrivalInfo({ role: "student" }, ist(2026, 10, 15, 5, 41), "05:30 AM - 07:00 AM");
@@ -74,7 +74,7 @@ test("trainer shifts: before noon = morning, after = afternoon; old records get 
   assert.equal(rules.shiftOfRecord({ batchTime: "Afternoon shift" }), "afternoon");
   assert.equal(rules.shiftOfRecord({ batchTime: "Live Stream", firstJoinAt: ist(2026, 10, 15, 15, 1) }), "afternoon");
   assert.equal(rules.rulesSummary().trainerShifts[0].window, "05:25 AM – 05:27 AM");
-  assert.equal(rules.rulesSummary().trainerShifts[1].window, "02:55 PM – 02:57 PM");
+  assert.equal(rules.rulesSummary().trainerShifts[1].window, "03:25 PM – 03:27 PM");
 });
 
 test("online sessions: every join/leave is kept (05:34–05:50, 06:02–…)", () => {
