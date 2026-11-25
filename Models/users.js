@@ -53,12 +53,28 @@ const userSchema = new mongoose.Schema(
     feePaymentScreenshot: { type: String, default: "" },
     feePaymentStatus: {
       type: String,
-      enum: ["not_submitted", "pending_verification", "verified", "rejected"],
+      enum: ["not_submitted", "pending_verification", "verified", "rejected", "partial"], // partial = part of the fee received
       default: "not_submitted",
     },
     feeSubmittedAt: { type: Date, default: null },
     // Which course this month's fee screenshot is for (student picks it when uploading)
-    feeLanguage: { type: String, enum: ["", "English", "Hindi"], default: "" },
+    feeLanguage: { type: String, enum: ["", "English", "Hindi", "Both"], default: "" }, // Both = one payment for English + Hindi
+    // 💰 PART PAYMENT this month (e.g. fee ₹2,700 → paid ₹1,500 → ₹1,200 left)
+    feeAmountDue: { type: Number, default: 0 }, // total fee for this month (set by the manager)
+    feeAmountPaid: { type: Number, default: 0 }, // received so far this month
+    feePayments: {
+      type: [
+        {
+          amount: { type: Number, default: 0 },
+          language: { type: String, default: "" },
+          screenshot: { type: String, default: "" },
+          at: { type: Date, default: Date.now },
+          byName: { type: String, default: "" },
+          _id: false,
+        },
+      ],
+      default: [],
+    },
     feeScreenshotPublicId: { type: String, default: "" }, // Cloudinary id (so a wrong screenshot can be deleted)
     feeVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 

@@ -6,6 +6,7 @@ const feeHistorySchema = new mongoose.Schema(
     totalStudents: { type: Number, default: 0 },
     totalPaid: { type: Number, default: 0 },
     totalUnpaid: { type: Number, default: 0 },
+    totalPartial: { type: Number, default: 0 }, // paid only part of the fee
     archivedAt: { type: Date, default: Date.now },
   },
   { timestamps: true }

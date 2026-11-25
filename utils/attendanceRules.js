@@ -7,11 +7,11 @@
 //
 // TRAINERS: two attendances a day.
 //   Morning shift   05:30 AM → join 05:25–05:27 AM = Present, after 05:27 = Late
-//   Afternoon shift 03:00 PM → join 02:55–02:57 PM = Present, after 02:57 = Late
+//   Afternoon shift 03:30 PM → join 03:25–03:27 PM = Present, after 03:27 = Late
 //   (joining even earlier than the window is fine = Present)
 //
 // Change on Render → Environment if the institute changes its timings:
-//   STUDENT_GRACE_MIN=7  TRAINER_MORNING_START=05:30  TRAINER_AFTERNOON_START=15:00
+//   STUDENT_GRACE_MIN=7  TRAINER_MORNING_START=05:30  TRAINER_AFTERNOON_START=15:30
 //   TRAINER_ON_TIME_BEFORE_MIN=3  TRAINER_WINDOW_BEFORE_MIN=5  TRAINER_SHIFT_SPLIT=12:00
 // =====================================================
 const { parseClockToMinutes, istMinutesOfDay } = require("./time");
@@ -29,7 +29,7 @@ const SHIFT_SPLIT = clock(process.env.TRAINER_SHIFT_SPLIT, 12 * 60);
 
 const SHIFTS = [
   { key: "morning", label: "Morning shift", start: clock(process.env.TRAINER_MORNING_START, 5 * 60 + 30) },
-  { key: "afternoon", label: "Afternoon shift", start: clock(process.env.TRAINER_AFTERNOON_START, 15 * 60) },
+  { key: "afternoon", label: "Afternoon shift", start: clock(process.env.TRAINER_AFTERNOON_START, 15 * 60 + 30) }, // 3:30 PM → mark by 3:27 PM
 ];
 const SHIFT_LABELS = SHIFTS.map((s) => s.label);
 

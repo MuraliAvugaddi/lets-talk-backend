@@ -131,6 +131,15 @@ const notify = {
         data: { click: "fees", type: "fee" },
       })
     ),
+  // 💰 part of the fee received → how much is left
+  feePartial: (userId, amount, balance, total) =>
+    push.later(() =>
+      push.toUsers(userId, {
+        title: `💰 ₹${amount} received`,
+        body: `Thank you! ₹${balance} is still left of your ₹${total} fee this month. Please pay it and upload the screenshot in the app.`,
+        data: { click: "fees", type: "fee" },
+      })
+    ),
   feeRejected: (userId) =>
     push.later(() =>
       push.toUsers(userId, {

@@ -80,20 +80,31 @@ const resetMonthlyFeesForNewMonth = async () => {
     const prevMonthYear = monthKey(new Date(), -1);
 
     // dropouts pay no fees → not counted
-    const [totalStudents, totalPaid] = await Promise.all([
+    const [totalStudents, totalPaid, totalPartial] = await Promise.all([
       User.countDocuments({ role: "student", isDropout: { $ne: true } }),
       User.countDocuments({ role: "student", isDropout: { $ne: true }, feeStatus: "paid" }),
+      User.countDocuments({ role: "student", isDropout: { $ne: true }, feeStatus: { $ne: "paid" }, feeAmountPaid: { $gt: 0 } }),
     ]);
 
     await FeeHistory.findOneAndUpdate(
       { monthYear: prevMonthYear },
-      { totalStudents, totalPaid, totalUnpaid: totalStudents - totalPaid, archivedAt: new Date() },
+      { totalStudents, totalPaid, totalPartial, totalUnpaid: totalStudents - totalPaid, archivedAt: new Date() },
       { upsert: true, returnDocument: "after" }
     );
 
     const result = await User.updateMany(
       { role: "student" },
-      { $set: { feeStatus: "unpaid", feePaymentStatus: "not_submitted", feePaymentScreenshot: "" } }
+      {
+        $set: {
+          feeStatus: "unpaid",
+          feePaymentStatus: "not_submitted",
+          feePaymentScreenshot: "",
+          feeLanguage: "",
+          feeAmountDue: 0,
+          feeAmountPaid: 0,
+          feePayments: [],
+        },
+      }
     );
 
     console.log(`✅ Monthly fee reset (${prevMonthYear} archived): ${result.modifiedCount} students set to unpaid.`);
