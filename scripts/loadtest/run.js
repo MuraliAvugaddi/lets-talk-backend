@@ -144,6 +144,10 @@ const openSockets = async () => {
 const studentFlow = async (s) => {
   await call("GET class-mode", "GET", "/api/class-mode", s.token);
   await call("GET my-attendance", "GET", `/api/user/my-attendance?userId=${s.id}`, s.token);
+  // new home-screen checks (study material list, 🔔 stage messages, fee status)
+  await call("GET materials", "GET", "/api/materials", s.token);
+  await call("GET stage-messages", "GET", "/api/stage-messages", s.token);
+  await call("GET fee my-status", "GET", `/api/fee/my-status?userId=${s.id}`, s.token);
   const prep = await call("POST rtc/prepare-call", "POST", "/api/rtc/prepare-call", s.token, {
     language: s.language,
     stage: s.stage,

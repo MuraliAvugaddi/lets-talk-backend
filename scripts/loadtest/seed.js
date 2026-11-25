@@ -17,7 +17,7 @@ const { signToken } = require("../../middleware/authMiddleware");
 
 const N = Number(process.argv[2] || 2000);
 const SECTIONS = ["A", "B", "C", "D", "E"];
-const STAGES = ["stage1", "stage2", "stage3"];
+const STAGES = ["stage1", "stage2", "stage3", "stage4", "stage5", "stage6", "stage7"]; // all 7 stages → 35 English + 7 Hindi classes at once
 
 (async () => {
   const uri = process.env.MONGO_URI || "";
@@ -43,7 +43,7 @@ const STAGES = ["stage1", "stage2", "stage3"];
   const hash = await bcrypt.hash("Test@1234", 10); // same password for all → seeding stays fast
   const access = (stage) => Object.fromEntries([1, 2, 3, 4, 5, 6, 7].map((n) => [`stage${n}`, `stage${n}` === stage]));
 
-  // students: 90% English online (5 sections × 3 stages), 10% Hindi online
+  // students: 90% English online (5 sections × 7 stages), 10% Hindi online
   const students = [];
   for (let i = 0; i < N; i++) {
     const hindi = i % 10 === 9;
