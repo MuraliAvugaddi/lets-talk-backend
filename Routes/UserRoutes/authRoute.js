@@ -151,6 +151,7 @@ router.post("/trainer/alerts/read", requireAuth(...STAFF), markAlertsRead);
 router.delete("/users/:id", requireAuth(), deleteUser); // students: self only (checked inside)
 router.get("/admin/users-by-stage", auth(...STAFF), getUsersByStage);
 router.get("/admin/teachers", auth(...ADMIN), getAllTeachersFiltered);
+router.get("/admin/badges", requireAuth(...ADMIN), require("../../Controllers/UserContollers/adminBadgeController").getBadges); // 🔴 menu counts
 router.put("/admin/staff/:id", requireAuth(...ADMIN), updateStaff); // ✏️ edit trainer / manager
 router.get("/admin/class-load", auth(...ADMIN), getClassLoad); // students per stage / section / timing
 
