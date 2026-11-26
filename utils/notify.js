@@ -4,29 +4,34 @@
 // =====================================================
 const push = require("./push");
 
+// 📥 also keep it on the student's Messages page (in the app) — background, never throws
+const keep = (row) => push.later(() => require("../Controllers/UserContollers/stageMessageController").record(row));
+
 const langStage = (language, stage) =>
   `${language === "Hindi" ? "Hindi" : "English"} ${String(stage || "").replace(/stage/i, "Stage ")}`.trim();
 
 const notify = {
   // 📢 admin notice → online / offline / all students
-  notice: (message, targetMode) =>
-    push.later(() =>
+  notice: (message, targetMode) => {
+    keep({ kind: "notice", title: "📢 Notice", message, language: "All", mode: targetMode });
+    return push.later(() =>
       push.toTopic(push.topicForTarget(targetMode), {
         title: "📢 Let's Speak notice",
         body: message,
         data: { click: "home", type: "notice" },
       })
-    ),
+    );
+  },
 
   // 🎙 special class set for today
-  specialClassSet: (title, startTime) =>
-    push.later(() =>
-      push.toTopic("students", {
-        title: `🎙 ${title || "Surendra Sir Special Class"}`,
-        body: `Today at ${startTime}. Join from the app on time — attendance is counted.`,
-        data: { click: "assembly", type: "assembly" },
-      })
-    ),
+  specialClassSet: (title, startTime) => {
+    const t = `🎙 ${title || "Surendra Sir Special Class"}`;
+    const body = `Today at ${startTime}. Join from the app on time — attendance is counted.`;
+    keep({ kind: "special", title: t, message: body, language: "All" });
+    return push.later(() =>
+      push.toTopic("students", { title: t, body, data: { click: "assembly", type: "assembly" } })
+    );
+  },
 
   // ⏰ special class starts in 10 minutes
   specialClassSoon: (title, startTime) =>
@@ -40,20 +45,18 @@ const notify = {
 
   // 🌧 offline classes are online today
   //    stages = ["stage1","stage3"] → only those stages (empty = all)
-  rainDay: (reason, stages = []) =>
-    push.later(() =>
-      push.toTopic("mode_offline", {
-        title: stages && stages.length
-          ? `🌧 ${stages.map((s) => s.replace("stage", "Stage ")).join(", ")}: class is ONLINE today`
-          : "🌧 Today's class is ONLINE",
-        body: `${reason ? `${reason}. ` : ""}${
-          stages && stages.length
-            ? "Offline students of these stages: join from the app at your usual time. Other stages come to the institute as usual."
-            : "Offline students: join your class from the app today at your usual time."
-        }`,
-        data: { click: "home", type: "rain" },
-      })
-    ),
+  rainDay: (reason, stages = []) => {
+    const title = stages && stages.length
+      ? `🌧 ${stages.map((s) => s.replace("stage", "Stage ")).join(", ")}: class is ONLINE today`
+      : "🌧 Today's class is ONLINE";
+    const body = `${reason ? `${reason}. ` : ""}${
+      stages && stages.length
+        ? "Offline students of these stages: join from the app at your usual time. Other stages come to the institute as usual."
+        : "Offline students: join your class from the app today at your usual time."
+    }`;
+    keep({ kind: "rain", title, message: body, language: "All", stages, mode: "offline" });
+    return push.later(() => push.toTopic("mode_offline", { title, body, data: { click: "home", type: "rain" } }));
+  },
 
   // ✅ ⏰ ❌ attendance
   attendance: (userId, status, { language, stage, lateByMinutes } = {}) => {
@@ -74,6 +77,7 @@ const notify = {
   stageUnlocked: (userId, language, stageNumbers) => {
     if (!stageNumbers.length) return;
     const list = stageNumbers.map((n) => `Stage ${n}`).join(", ");
+    keep({ kind: "stage", title: "🎉 Congratulations!", message: `You are promoted — ${language} ${list} is now open for you.`, student: userId });
     push.later(() =>
       push.toUsers(userId, {
         title: "🎉 Congratulations!",
@@ -109,8 +113,9 @@ const notify = {
     }),
 
   // 📝 new test is live for one language + stage → only those students
-  testReleased: (language, stage) =>
-    push.later(async () => {
+  testReleased: (language, stage) => {
+    keep({ kind: "test", title: "📝 New test is live!", message: `${langStage(language, stage)} test is open now. Please complete it on time.`, language, stages: [stage] });
+    return push.later(async () => {
       const User = require("../Models/users");
       const key = language === "Hindi" ? "hindiAccess" : "englishAccess";
       const ids = await User.find({ role: "student", [`${key}.${stage}`]: true }).distinct("_id");
@@ -120,42 +125,56 @@ const notify = {
         body: `${langStage(language, stage)} test is open now. Please complete it on time.`,
         data: { click: "tests", type: "test" },
       });
-    }),
+    });
+  },
 
   // 💳 fee
-  feeApproved: (userId) =>
-    push.later(() =>
+  feeApproved: (userId) => {
+    keep({ kind: "fee", title: "✅ Fee received", message: "Thank you! Your fee for this month is confirmed.", student: userId });
+    return push.later(() =>
       push.toUsers(userId, {
         title: "✅ Fee received",
         body: "Thank you! Your fee for this month is confirmed.",
         data: { click: "fees", type: "fee" },
       })
-    ),
+    );
+  },
   // 💰 part of the fee received → how much is left
-  feePartial: (userId, amount, balance, total) =>
-    push.later(() =>
+  feePartial: (userId, amount, balance, total) => {
+    keep({
+      kind: "fee",
+      title: `💰 ₹${amount} received`,
+      message: `Thank you! ₹${balance} is still left of your ₹${total} fee this month. Please pay it and upload the screenshot in the app.`,
+      student: userId,
+    });
+    return push.later(() =>
       push.toUsers(userId, {
         title: `💰 ₹${amount} received`,
         body: `Thank you! ₹${balance} is still left of your ₹${total} fee this month. Please pay it and upload the screenshot in the app.`,
         data: { click: "fees", type: "fee" },
       })
-    ),
-  feeRejected: (userId) =>
-    push.later(() =>
+    );
+  },
+  feeRejected: (userId) => {
+    keep({ kind: "fee", title: "⚠️ Fee screenshot not accepted", message: "Please check and upload your payment screenshot again.", student: userId });
+    return push.later(() =>
       push.toUsers(userId, {
         title: "⚠️ Fee screenshot not accepted",
         body: "Please check and upload your payment screenshot again.",
         data: { click: "fees", type: "fee" },
       })
-    ),
-  feeReminder: () =>
-    push.later(() =>
+    );
+  },
+  feeReminder: () => {
+    keep({ kind: "fee", title: "💳 Monthly fee reminder", message: "A new month has started. Please pay your fee and upload the screenshot in the app.", language: "All" });
+    return push.later(() =>
       push.toTopic("students", {
         title: "💳 Monthly fee reminder",
         body: "A new month has started. Please pay your fee and upload the screenshot in the app.",
         data: { click: "fees", type: "fee" },
       })
-    ),
+    );
+  },
 };
 
 module.exports = notify;

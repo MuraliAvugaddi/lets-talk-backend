@@ -12,10 +12,15 @@ const stageMessageSchema = new mongoose.Schema(
     sentTo: { type: Number, default: 0 }, // how many students matched when it was sent
     sentBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     sentByName: { type: String, default: "" },
+    // 🔔 also every notification the institute sends (notice, special class,
+    //    online day, new test, fee …) is kept here → the student's Messages page
+    kind: { type: String, default: "message" }, // message | notice | special | rain | test | fee | stage | mode
+    student: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // set → only this student
   },
   { timestamps: true }
 );
 
 stageMessageSchema.index({ createdAt: -1 });
+stageMessageSchema.index({ student: 1, createdAt: -1 });
 
 module.exports = mongoose.model("StageMessage", stageMessageSchema);

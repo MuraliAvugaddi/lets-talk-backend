@@ -91,7 +91,7 @@ const { listMyAlerts, markAlertsRead } = require("../../Controllers/UserContolle
 
 const { auth, requireAuth } = require("../../middleware/authMiddleware");
 const { loginLimiter, resetLimiter, registerLimiter, otpLimiter, otpVerifyLimiter } = require("../../middleware/rateLimit");
-const { sendOtp, verifyOtp } = require("../../Controllers/UserContollers/otpController");
+const { sendOtp, verifyOtp, checkPhone } = require("../../Controllers/UserContollers/otpController");
 
 // requireAuth  = token always required
 // auth         = token required once ENFORCE_AUTH=true (transition mode before that)
@@ -102,6 +102,7 @@ const STAFF = ["teacher", "manager", "admin"];
 //        AUTH
 // ==============================
 // 🔐 Phone OTP by SMS (MSG91) — signup + forgot password
+router.post("/otp/check-phone", otpVerifyLimiter, checkPhone); // sign-up step 1: "you already have an account"
 router.post("/otp/send", otpLimiter, sendOtp);
 router.post("/otp/verify", otpVerifyLimiter, verifyOtp);
 router.post("/register", registerLimiter, registerUser); // staff roles need an admin token (checked inside)

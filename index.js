@@ -86,6 +86,7 @@ app.use(cors({ origin: corsOrigin }));
 app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: "1mb" }));
 
+require("./utils/realtime").set(io); // background notifications can update open apps too
 app.use((req, res, next) => {
   req.io = io;
   next();
@@ -347,3 +348,4 @@ const stopCrons = () => {
 };
 
 module.exports = { app, server, io, startServer, runStartupMigrations, stopCrons };
+ 

@@ -17,6 +17,10 @@ const { effectiveSection } = require("./sectionMergeController");
 const { guestStagesOf } = require("./hindiStageMergeController");
 
 const isStaff = (u) => !!u && STAFF_ROLES.includes(u.role);
+const isAdminRole = (u) => !!u && ["admin", "manager"].includes(u.role);
+const isAssembly = (room) => String(room || "").startsWith("assembly_");
+/** 🎙 special class: only Sir (admin / manager) runs it. Trainers there are listeners. */
+const mayRun = (u, room) => (isAssembly(room) ? isAdminRole(u) : isStaff(u));
 const { liveBlockReason } = require("../../utils/stageAccess");
 // english_stage2_secA_… / hindi_stage1_… / offline_english_stage3_… → language + stage of the room
 const roomStage = (room) => {
@@ -76,8 +80,15 @@ const roomToken = async (req, res) => {
     const room = String(req.body.room || "").trim().toLowerCase();
     if (!ROOM_RE.test(room)) return res.status(400).json({ error: "room is required" });
     if (!(await mayJoin(req.user, room))) return res.status(403).json({ error: "This is not your class" });
-    if (!isStaff(req.user) && !(await lk.isRoomLive(room))) {
-      return res.status(409).json({ error: "The class has not started yet", started: false });
+    // special class: trainers too may only join while Sir's class is LIVE
+    // (before: a trainer's phone re-joining after "End" made a NEW empty room and
+    //  stayed in it — the class never ended on the trainer side)
+    if (!mayRun(req.user, room) && !(await lk.isRoomLive(room))) {
+      return res.status(409).json({
+        error: isAssembly(room) ? "The special class has ended" : "The class has not started yet",
+        started: false,
+        ended: isAssembly(room),
+      });
     }
     const token = await lk.joinToken({ userId: req.user._id, name: req.user.name, room, staff: isStaff(req.user) });
     res.status(200).json({ token, url: process.env.LIVEKIT_URL, room });
@@ -90,6 +101,11 @@ const roomArg = (req, res) => {
   const room = String(req.body.room || "").trim().toLowerCase();
   if (!ROOM_RE.test(room)) {
     res.status(400).json({ error: "room is required" });
+    return null;
+  }
+  // 🎙 special class controls (end / mute / kick / mic rules) = Sir only, not trainers
+  if (!mayRun(req.user, room)) {
+    res.status(403).json({ error: "Only the admin can control the special class" });
     return null;
   }
   return room;

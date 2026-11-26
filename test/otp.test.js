@@ -75,3 +75,17 @@ test("OTP: reviewer test number gets the fixed code and no SMS", async () => {
   const ok = await call(otp.verifyOtp, { phone: "9999999999", purpose: "signup", otp: "123456" });
   assert.equal(ok.code, 200);
 });
+
+test("check-phone: tells sign-up at step 1 that the number already has an account (no SMS)", async () => {
+  const before = sms.length;
+  registered.add("9123456789");
+  let r = await call(otp.checkPhone, { phone: "+91 91234 56789" });
+  assert.equal(r.code, 200);
+  assert.equal(r.body.exists, true);
+  r = await call(otp.checkPhone, { phone: "9000000001" });
+  assert.equal(r.body.exists, false);
+  r = await call(otp.checkPhone, { phone: "123" });
+  assert.equal(r.code, 400);
+  assert.equal(sms.length, before); // never sends an SMS
+  registered.delete("9123456789");
+});

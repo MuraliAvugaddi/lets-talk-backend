@@ -28,7 +28,8 @@ const clearCache = () => {
 const recent = async () => {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.rows;
   const since = new Date(Date.now() - KEEP_DAYS * 24 * 3600 * 1000);
-  const rows = await StageMessage.find({ createdAt: { $gte: since } })
+  // group messages only (personal ones are read per student, see listMessages)
+  const rows = await StageMessage.find({ createdAt: { $gte: since }, student: null })
     .sort({ createdAt: -1 })
     .limit(MAX_LIST)
     .lean();
@@ -66,7 +67,10 @@ const userMode = (u) => (String(u.mode || "online").toLowerCase() === "offline" 
 /** Is this message for this student? (current stage(s) only — not finished stages) */
 const isFor = (user, msg) => {
   if (!user || user.role !== "student") return false;
+  if (msg.student) return String(msg.student) === String(user._id || user.id);
   if (msg.mode !== "all" && msg.mode !== userMode(user)) return false;
+  // English & Hindi + every stage = EVERY student (also new students without a stage yet)
+  if (msg.language === "All" && !(msg.stages && msg.stages.length)) return true;
   return langsOf(msg.language).some((L) => {
     const access = plain(user[fields(L).access]);
     return stagesOf(msg.stages).some((s) => access[s]);
@@ -79,7 +83,8 @@ const studentFilter = (msg) => {
   for (const L of langsOf(msg.language)) {
     for (const s of stagesOf(msg.stages)) or.push({ [`${fields(L).access}.${s}`]: true });
   }
-  const q = { role: "student", isDropout: { $ne: true }, $or: or };
+  const everyone = msg.language === "All" && !(msg.stages && msg.stages.length);
+  const q = everyone ? { role: "student", isDropout: { $ne: true } } : { role: "student", isDropout: { $ne: true }, $or: or };
   if (msg.mode === "offline") q.mode = "offline";
   if (msg.mode === "online") q.mode = { $ne: "offline" };
   return q;
@@ -87,6 +92,7 @@ const studentFilter = (msg) => {
 
 /** "English • Stage 1, 2 • Online" */
 const groupLabel = (msg) => {
+  if (msg.student) return "Just for you";
   const lang = msg.language === "All" ? "English & Hindi" : msg.language;
   const st = msg.stages && msg.stages.length ? `Stage ${msg.stages.map((s) => s.replace("stage", "")).join(", ")}` : "All stages";
   const mode = msg.mode === "all" ? "Online & Offline" : msg.mode === "online" ? "Online" : "Offline";
@@ -101,6 +107,7 @@ const view = (m) => ({
   stages: m.stages || [],
   mode: m.mode,
   group: groupLabel(m),
+  kind: m.kind || "message",
   sentTo: m.sentTo || 0,
   sentByName: m.sentByName || "",
   createdAt: m.createdAt,
@@ -115,7 +122,16 @@ const listMessages = async (req, res) => {
     const rows = await recent();
     const u = req.user;
     const staff = u && ["admin", "manager"].includes(u.role);
-    const mine = staff ? rows : rows.filter((m) => isFor(u, m));
+    let mine = staff ? rows : rows.filter((m) => isFor(u, m));
+    // + this student's own notifications (fee, promotion …)
+    if (!staff && u && u.role === "student" && u._id) {
+      const since = new Date(Date.now() - KEEP_DAYS * 24 * 3600 * 1000);
+      const own = await StageMessage.find({ student: u._id, createdAt: { $gte: since } })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean();
+      if (own.length) mine = [...mine, ...own].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    }
     res.set("Cache-Control", "no-store");
     res.status(200).json({ success: true, messages: mine.map(view) });
   } catch (error) {
@@ -194,4 +210,35 @@ const deleteMessage = async (req, res) => {
   }
 };
 
-module.exports = { listMessages, sendMessage, deleteMessage, isFor, studentFilter, groupLabel, cleanStages };
+// ---------------------------------------------------------------
+// 🔔 keep a notification the server sent (notice, special class …) so it also
+//    shows on the student's Messages page. Never throws.
+//    record({ kind, title, message, language, stages, mode })            → group
+//    record({ kind, title, message, student })                           → one student
+// ---------------------------------------------------------------
+const record = async ({ kind = "message", title = "", message = "", language = "All", stages = [], mode = "all", student = null, io = null }) => {
+  try {
+    if (require("mongoose").connection.readyState !== 1) return null; // no database (tests)
+    io = io || require("../../utils/realtime").get();
+    const text = String(message || "").trim();
+    if (!text) return null;
+    const doc = await StageMessage.create({
+      kind,
+      title: String(title || "").slice(0, 120),
+      message: text.slice(0, 2000),
+      language: cleanLang(language) || "All",
+      stages: cleanStages(stages),
+      mode: cleanMode(mode) || "all",
+      student: student || null,
+      sentByName: "Let's Speak",
+    });
+    if (!student) clearCache();
+    if (io) io.emit("stage_message", { action: "new", id: String(doc._id) });
+    return doc;
+  } catch (e) {
+    console.error("Record notification error:", e.message);
+    return null;
+  }
+};
+
+module.exports = { listMessages, sendMessage, deleteMessage, record, isFor, studentFilter, groupLabel, cleanStages };

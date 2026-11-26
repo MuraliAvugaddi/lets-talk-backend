@@ -262,7 +262,25 @@ const verifyOtp = async (req, res) => {
   }
 };
 
+// =====================================================
+// POST /api/otp/check-phone  { phone } → { exists }
+// Sign-up step 1: tell the student RIGHT AWAY that the number already has an
+// account (instead of after filling every screen). No SMS is sent.
+// =====================================================
+const checkPhone = async (req, res) => {
+  try {
+    const phone = cleanPhone(req.body.phone);
+    if (phone.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit mobile number." });
+    const exists = !!(await User.exists({ phone: { $in: phoneCandidates(phone) }, ...sideFilter("student") }));
+    res.status(200).json({ exists });
+  } catch (error) {
+    console.error("Check phone Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 module.exports = {
+  checkPhone,
   sendOtp,
   verifyOtp,
   verifyOtpToken,

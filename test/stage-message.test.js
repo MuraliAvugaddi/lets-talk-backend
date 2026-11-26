@@ -16,7 +16,9 @@ StageMessage.create = async (d) => {
   db.unshift(doc);
   return doc;
 };
-StageMessage.find = () => ({ sort: () => ({ limit: () => ({ lean: async () => db.map((x) => ({ ...x })) }) }) });
+const pick = (q = {}) =>
+  db.filter((x) => (q.student === null ? !x.student : q.student ? String(x.student) === String(q.student) : true));
+StageMessage.find = (q) => ({ sort: () => ({ limit: () => ({ lean: async () => pick(q).map((x) => ({ ...x })) }) }) });
 StageMessage.findByIdAndDelete = (id) => ({
   lean: async () => {
     const d = db.find((x) => x._id === id);
@@ -66,11 +68,12 @@ test("All stages, both languages, offline", async () => {
   db = [];
   const r = await call(ctrl.sendMessage, { user: admin, body: { message: "Holiday", language: "All", stages: [], mode: "offline" } });
   assert.equal(r.body.data.group, "English & Hindi • All stages • Offline");
-  assert.equal(lastFilter.$or.length, 14);
+  assert.equal(lastFilter.$or, undefined); // everyone (also new students without a stage)
   assert.equal(lastFilter.mode, "offline");
   const see = async (u) => (await call(ctrl.listMessages, { user: u })).body.messages.length;
   assert.equal(await see(stu([5], [], "offline")), 1);
   assert.equal(await see(stu([], [3], "offline")), 1);
+  assert.equal(await see(stu([], [], "offline")), 1); // new student, no stage yet
   assert.equal(await see(stu([5], [], "online")), 0);
 });
 
@@ -80,4 +83,26 @@ test("checks + delete", async () => {
   const id = db[0]._id;
   assert.equal((await call(ctrl.deleteMessage, { user: admin, params: { id } })).code, 200);
   assert.equal((await call(ctrl.deleteMessage, { user: admin, params: { id } })).code, 404);
+});
+
+test("notifications from the institute show on the Messages page (group + personal)", async () => {
+  db = [];
+  const mongoose = require("mongoose");
+  const rs = Object.getOwnPropertyDescriptor(mongoose.connection, "readyState");
+  Object.defineProperty(mongoose.connection, "readyState", { value: 1, configurable: true });
+  try {
+    await ctrl.record({ kind: "notice", title: "📢 Notice", message: "No class on Sunday", language: "All", mode: "online" });
+    await ctrl.record({ kind: "fee", title: "✅ Fee received", message: "Thanks", student: "s77" });
+  } finally {
+    if (rs) Object.defineProperty(mongoose.connection, "readyState", rs);
+    else delete mongoose.connection.readyState;
+  }
+  const list = async (u) => (await call(ctrl.listMessages, { user: u })).body.messages;
+  const me = { ...stu([2], [], "online"), _id: "s77" };
+  const other = { ...stu([2], [], "online"), _id: "s88" };
+  const mine = await list(me);
+  assert.deepEqual(mine.map((m) => m.kind).sort(), ["fee", "notice"]);
+  assert.equal(mine.find((m) => m.kind === "fee").group, "Just for you");
+  assert.deepEqual((await list(other)).map((m) => m.kind), ["notice"]); // fee is only for s77
+  assert.equal((await list({ ...stu([2], [], "offline"), _id: "s99" })).length, 0); // online-only notice
 });
