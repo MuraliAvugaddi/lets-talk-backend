@@ -67,11 +67,12 @@ open(p, "w").write(s)
 print("✅ config updated")
 PY
 
-echo "▶ Firewall: open 3478/udp + 5349/tcp"
+echo "▶ Firewall: open 3478/udp + 5349/tcp + TURN relay ports 30000-40000/udp"
 if command -v ufw >/dev/null 2>&1; then
   ufw allow 3478/udp >/dev/null
   ufw allow 5349/tcp >/dev/null
   ufw allow 7881/tcp >/dev/null
+  ufw allow 30000:40000/udp >/dev/null   # TURN relays the audio through these
 fi
 
 echo "▶ Restarting LiveKit…"
@@ -83,7 +84,7 @@ docker compose logs --since 20s livekit 2>&1 | grep -iE "turn|error|fatal" | tai
 # Caddy renews the certificate every ~60 days; LiveKit reads it at start.
 # Restart LiveKit on the 1st of every month at 2:10 AM (no class at that time).
 CRON='10 2 1 * * cd /opt/livekit && docker compose restart livekit >/dev/null 2>&1'
-( crontab -l 2>/dev/null | grep -v "docker compose restart livekit" ; echo "$CRON" ) | crontab -
+( crontab -l 2>/dev/null | grep -v "docker compose restart livekit" || true ; echo "$CRON" ) | crontab -
 echo "▶ Monthly certificate refresh added (1st of each month, 2:10 AM)"
 
 if docker compose ps livekit | grep -qiE "up|running"; then
