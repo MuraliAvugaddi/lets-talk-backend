@@ -27,4 +27,7 @@ module.exports = {
   // 📩 OTP SMS cost guard per IP (each phone number is also limited: 60 s wait, 5 per day)
   otpLimiter: make(15, 40, "Too many OTP requests. Please wait 15 minutes."),
   otpVerifyLimiter: make(15, 80, "Too many attempts. Please wait 15 minutes."),
+  // sign-up step 1 "already have an account?" — sends no SMS, so a lighter guard
+  // (a whole class signing up on one Wi-Fi / Jio IP must never be blocked)
+  phoneCheckLimiter: make(15, 400, "Too many checks from this network. Please wait a few minutes."),
 };
