@@ -5,14 +5,15 @@
 //   05:30 AM class → join by 05:37 AM = Present, after that = Late (minutes late are shown).
 //   Online: minutes in class + every join/leave are recorded. Offline (GPS): only the check-in time.
 //
-// TRAINERS: two attendances a day.
-//   Morning shift   05:30 AM → join 05:25–05:27 AM = Present, after 05:27 = Late
-//   Afternoon shift 03:30 PM → join 03:25–03:27 PM = Present, after 03:27 = Late
-//   (joining even earlier than the window is fine = Present)
+// TRAINERS: two attendances a day (classes start 05:30 AM and 03:30 PM).
+//   ONLINE trainers  → mark by 05:25 AM / 03:25 PM = Present, after that = Late
+//   OFFLINE trainers → mark by 05:20 AM / 03:20 PM = Present, after that = Late
+//   (marking earlier is always fine = Present)
+// MANAGERS / ADMINS have no attendance.
 //
-// Change on Render → Environment if the institute changes its timings:
+// Change in the server environment if the institute changes its timings:
 //   STUDENT_GRACE_MIN=7  TRAINER_MORNING_START=05:30  TRAINER_AFTERNOON_START=15:30
-//   TRAINER_ON_TIME_BEFORE_MIN=3  TRAINER_WINDOW_BEFORE_MIN=5  TRAINER_SHIFT_SPLIT=12:00
+//   TRAINER_ONLINE_BEFORE_MIN=5  TRAINER_OFFLINE_BEFORE_MIN=10  TRAINER_SHIFT_SPLIT=12:00
 // =====================================================
 const { parseClockToMinutes, istMinutesOfDay } = require("./time");
 
@@ -23,13 +24,17 @@ const clock = (v, d) => {
 };
 
 const STUDENT_GRACE_MIN = num(process.env.STUDENT_GRACE_MIN, 7);
-const TRAINER_WINDOW_BEFORE_MIN = num(process.env.TRAINER_WINDOW_BEFORE_MIN, 5);
-const TRAINER_ON_TIME_BEFORE_MIN = num(process.env.TRAINER_ON_TIME_BEFORE_MIN, 3);
+// minutes BEFORE the class start a trainer must mark attendance
+const TRAINER_ONLINE_BEFORE_MIN = num(process.env.TRAINER_ONLINE_BEFORE_MIN, 5); // 05:25 / 03:25
+const TRAINER_OFFLINE_BEFORE_MIN = num(process.env.TRAINER_OFFLINE_BEFORE_MIN, 10); // 05:20 / 03:20
+const WINDOW_MIN = 5; // shown to the trainer: "05:20 – 05:25 AM"
+const beforeMinFor = (mode) =>
+  String(mode || "").toLowerCase() === "offline" ? TRAINER_OFFLINE_BEFORE_MIN : TRAINER_ONLINE_BEFORE_MIN;
 const SHIFT_SPLIT = clock(process.env.TRAINER_SHIFT_SPLIT, 12 * 60);
 
 const SHIFTS = [
   { key: "morning", label: "Morning shift", start: clock(process.env.TRAINER_MORNING_START, 5 * 60 + 30) },
-  { key: "afternoon", label: "Afternoon shift", start: clock(process.env.TRAINER_AFTERNOON_START, 15 * 60 + 30) }, // 3:30 PM → mark by 3:27 PM
+  { key: "afternoon", label: "Afternoon shift", start: clock(process.env.TRAINER_AFTERNOON_START, 15 * 60 + 30) }, // 3:30 PM class
 ];
 const SHIFT_LABELS = SHIFTS.map((s) => s.label);
 
@@ -44,17 +49,18 @@ const fmtClock = (mins) => {
 const shiftAt = (mins) => (mins < SHIFT_SPLIT ? SHIFTS[0] : SHIFTS[1]);
 const shiftByKey = (key) => SHIFTS.find((s) => s.key === key) || null;
 
-/** Trainer joined / checked in at `mins` (IST minutes) */
-const trainerArrival = (mins) => {
+/** Trainer joined / checked in at `mins` (IST minutes). mode = "online" | "offline" */
+const trainerArrival = (mins, mode = "online") => {
   const shift = shiftAt(mins);
-  const onTimeUntil = shift.start - TRAINER_ON_TIME_BEFORE_MIN;
+  const onTimeUntil = shift.start - beforeMinFor(mode);
   const late = mins > onTimeUntil;
   return {
     shift: shift.key,
     shiftLabel: shift.label,
     status: late ? "Late" : "Present",
     lateByMinutes: late ? mins - onTimeUntil : 0,
-    window: `${fmtClock(shift.start - TRAINER_WINDOW_BEFORE_MIN)} – ${fmtClock(onTimeUntil)}`,
+    onTimeUntil: fmtClock(onTimeUntil),
+    window: `${fmtClock(onTimeUntil - WINDOW_MIN)} – ${fmtClock(onTimeUntil)}`,
   };
 };
 
@@ -79,12 +85,20 @@ const shiftOfRecord = (r) => {
 
 const rulesSummary = () => ({
   studentGraceMinutes: STUDENT_GRACE_MIN,
-  trainerShifts: SHIFTS.map((s) => ({
-    key: s.key,
-    label: s.label,
-    start: fmtClock(s.start),
-    window: `${fmtClock(s.start - TRAINER_WINDOW_BEFORE_MIN)} – ${fmtClock(s.start - TRAINER_ON_TIME_BEFORE_MIN)}`,
-  })),
+  trainerShifts: SHIFTS.map((s) => {
+    const on = s.start - TRAINER_ONLINE_BEFORE_MIN;
+    const off = s.start - TRAINER_OFFLINE_BEFORE_MIN;
+    return {
+      key: s.key,
+      label: s.label,
+      start: fmtClock(s.start),
+      window: `${fmtClock(on - WINDOW_MIN)} – ${fmtClock(on)}`, // online (older apps read this)
+      onlineBy: fmtClock(on),
+      offlineBy: fmtClock(off),
+      onlineWindow: `${fmtClock(on - WINDOW_MIN)} – ${fmtClock(on)}`,
+      offlineWindow: `${fmtClock(off - WINDOW_MIN)} – ${fmtClock(off)}`,
+    };
+  }),
 });
 
 module.exports = {

@@ -44,18 +44,23 @@ const INSTITUTE_LNG = Number(process.env.INSTITUTE_LNG || 83.312231);
 // Phone GPS drifts 20-50 m indoors; the app checks 40 m, server allows a little more
 const GEOFENCE_RADIUS_M = Number(process.env.GEOFENCE_RADIUS_M || 100);
 
-// ⏰ Time rules (student 7-minute grace, trainer 05:25–05:27 / 02:55–02:57) → utils/attendanceRules.js
+// ⏰ Time rules (student 7-minute grace; trainer online by 05:25 / 03:25, offline by 05:20 / 03:20) → utils/attendanceRules.js
 
 // =====================================================
 // HELPERS
 // =====================================================
 const isStaff = (user) => !!user && STAFF_ROLES.includes(user.role);
+// 👔 managers / admins have NO attendance (only trainers + students)
+const NO_ATTENDANCE_ROLES = ["manager", "admin"];
+const hasNoAttendance = (user) => !!user && NO_ATTENDANCE_ROLES.includes(user.role);
+const noAttendanceReply = (res) =>
+  res.status(200).json({ success: true, noAttendance: true, message: "Managers and admins have no attendance." });
 
 // With a token we trust ONLY the token. Without one (transition mode) we fall back to the body.
 const actingUserId = (req) => (req.user ? String(req.user._id) : req.body.userId || req.query.userId);
 
-// Trainer: on time = by 3 min before the shift (05:27 AM / 02:57 PM)
-const evaluateTeacherStatus = (when) => rules.trainerArrival(istMinutesOfDay(when)).status;
+// Trainer: online → by 05:25 AM / 03:25 PM, offline → by 05:20 AM / 03:20 PM
+const evaluateTeacherStatus = (when, mode = "online") => rules.trainerArrival(istMinutesOfDay(when), mode).status;
 
 // Student: on time = by 7 min after the class starts (05:37 AM for the 05:30 class)
 const evaluateStudentBatchStatus = (when, batchTimeStr) =>
@@ -65,7 +70,7 @@ const evaluateStudentBatchStatus = (when, batchTimeStr) =>
 const arrivalInfo = (user, when, batchTime) => {
   const mins = istMinutesOfDay(when);
   if (isStaff(user)) {
-    const a = rules.trainerArrival(mins);
+    const a = rules.trainerArrival(mins, user.mode);
     return { status: a.status, lateByMinutes: a.lateByMinutes };
   }
   const a = rules.studentArrival(mins, batchTime || DEFAULT_BATCH);
@@ -75,7 +80,7 @@ const arrivalInfo = (user, when, batchTime) => {
 // Trainers have two attendances a day: the record key carries the shift label
 const shiftFieldsFor = (user, when) => {
   if (!isStaff(user)) return null;
-  const a = rules.trainerArrival(istMinutesOfDay(when));
+  const a = rules.trainerArrival(istMinutesOfDay(when), user.mode);
   return { shift: a.shift, batchTime: a.shiftLabel };
 };
 
@@ -112,7 +117,7 @@ const offlineBatchFor = (user, when, sentBatch, language, stage) => {
 };
 
 const evaluateArrival = (user, when, batchTime) =>
-  isStaff(user) ? evaluateTeacherStatus(when) : evaluateStudentBatchStatus(when, batchTime);
+  isStaff(user) ? evaluateTeacherStatus(when, user.mode) : evaluateStudentBatchStatus(when, batchTime);
 
 // Online final status: stayed 45+ min → their arrival verdict (Present, or Late if they came late)
 const deriveOnlineStatus = (minutes, arrivalStatus) => {
@@ -181,6 +186,7 @@ const markAttendance = async (req, res) => {
 
     const user = await User.findById(userId).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
+    if (hasNoAttendance(user)) return noAttendanceReply(res);
 
     const now = new Date();
     const date = dateKey(now);
@@ -282,6 +288,7 @@ const joinOnlineClass = async (req, res) => {
 
     const user = await User.findById(userId).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
+    if (hasNoAttendance(user)) return noAttendanceReply(res);
 
     const now = new Date();
     const date = dateKey(now);
@@ -616,7 +623,7 @@ const getAttendanceSheet = async (req, res) => {
     const roleParam = String(req.query.role || "all").toLowerCase();
 
     const roles =
-      roleParam === "student" ? ["student"] : roleParam === "teacher" ? STAFF_ROLES : ["student", ...STAFF_ROLES];
+      roleParam === "student" ? ["student"] : roleParam === "teacher" ? ["teacher"] : ["student", "teacher"]; // no managers
 
     // An unknown language like "Club" simply returns nothing (same as before)
     if (!isAll(req.query.language) && !language) return res.status(200).json([]);
@@ -781,7 +788,7 @@ const getTrainerAttendance = async (req, res) => {
     const language = isAll(req.query.language) ? null : normLanguage(req.query.language);
     const stage = isAll(req.query.stage) ? null : normStage(req.query.stage);
 
-    const teacherQuery = { role: { $in: STAFF_ROLES } };
+    const teacherQuery = { role: "teacher" }; // 👔 managers / admins have no attendance
     if (mode) teacherQuery.mode = mode;
     if (language) teacherQuery.language = language;
     if (stage) teacherQuery.teacherStage = { $regex: `^stage\\s*${stage.replace("stage", "")}$`, $options: "i" };
@@ -1291,7 +1298,7 @@ const autoMarkAbsent = async (req, res) => {
       [1, 2, 3, 4, 5, 6, 7].map((n) => ({ [`${f}.stage${n}`]: true }))
     );
     const users = await User.find({
-      $or: [{ role: { $in: STAFF_ROLES } }, { role: "student", $or: anyAccess }],
+      $or: [{ role: "teacher" }, { role: "student", $or: anyAccess }], // managers are never marked absent
     })
       .select("name phone mode language role teacherStage batchTime englishBatch hindiBatch englishAccess hindiAccess")
       .lean();

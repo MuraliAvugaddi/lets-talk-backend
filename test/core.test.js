@@ -53,16 +53,25 @@ test("student: on time = join by start + 7 min (05:30 class → by 05:37), compu
   assert.equal(f(ist(2026, 10, 15, 15, 41), "03:30 PM - 05:00 PM"), "Late");
 });
 
-test("trainer: morning 05:25–05:27 / afternoon 03:25–03:27 = Present, after = Late", () => {
+test("trainer: ONLINE by 05:25 / 03:25, OFFLINE by 05:20 / 03:20 = Present, after = Late", () => {
   const { evaluateTeacherStatus: f, arrivalInfo } = _internal;
+  // online trainer
+  assert.equal(f(ist(2026, 10, 15, 5, 10), "online"), "Present"); // early is fine
+  assert.equal(f(ist(2026, 10, 15, 5, 25), "online"), "Present"); // last on-time minute
+  assert.equal(f(ist(2026, 10, 15, 5, 26), "online"), "Late");
+  assert.equal(f(ist(2026, 10, 15, 15, 25), "online"), "Present");
+  assert.equal(f(ist(2026, 10, 15, 15, 26), "online"), "Late");
+  // offline trainer
+  assert.equal(f(ist(2026, 10, 15, 5, 20), "offline"), "Present");
+  assert.equal(f(ist(2026, 10, 15, 5, 21), "offline"), "Late");
+  assert.equal(f(ist(2026, 10, 15, 15, 20), "offline"), "Present");
+  assert.equal(f(ist(2026, 10, 15, 15, 21), "offline"), "Late");
+  // no mode → online rule
   assert.equal(f(ist(2026, 10, 15, 5, 25)), "Present");
-  assert.equal(f(ist(2026, 10, 15, 5, 27)), "Present");
-  assert.equal(f(ist(2026, 10, 15, 5, 10)), "Present"); // early is fine
-  assert.equal(f(ist(2026, 10, 15, 5, 28)), "Late");
-  assert.equal(f(ist(2026, 10, 15, 15, 27)), "Present");
-  assert.equal(f(ist(2026, 10, 15, 15, 28)), "Late");
-  const t = arrivalInfo({ role: "teacher" }, ist(2026, 10, 15, 5, 34), null);
-  assert.deepEqual(t, { status: "Late", lateByMinutes: 7 });
+  const t = arrivalInfo({ role: "teacher", mode: "online" }, ist(2026, 10, 15, 5, 34), null);
+  assert.deepEqual(t, { status: "Late", lateByMinutes: 9 });
+  const off = arrivalInfo({ role: "teacher", mode: "offline" }, ist(2026, 10, 15, 15, 24), null);
+  assert.deepEqual(off, { status: "Late", lateByMinutes: 4 });
   const st = arrivalInfo({ role: "student" }, ist(2026, 10, 15, 5, 41), "05:30 AM - 07:00 AM");
   assert.deepEqual(st, { status: "Late", lateByMinutes: 4 });
 });
@@ -73,8 +82,10 @@ test("trainer shifts: before noon = morning, after = afternoon; old records get 
   assert.equal(rules.shiftAt(14 * 60 + 56).key, "afternoon");
   assert.equal(rules.shiftOfRecord({ batchTime: "Afternoon shift" }), "afternoon");
   assert.equal(rules.shiftOfRecord({ batchTime: "Live Stream", firstJoinAt: ist(2026, 10, 15, 15, 1) }), "afternoon");
-  assert.equal(rules.rulesSummary().trainerShifts[0].window, "05:25 AM – 05:27 AM");
-  assert.equal(rules.rulesSummary().trainerShifts[1].window, "03:25 PM – 03:27 PM");
+  const [m, a] = rules.rulesSummary().trainerShifts;
+  assert.deepEqual([m.onlineBy, m.offlineBy, a.onlineBy, a.offlineBy], ["05:25 AM", "05:20 AM", "03:25 PM", "03:20 PM"]);
+  assert.equal(m.window, "05:20 AM – 05:25 AM"); // online (older apps)
+  assert.equal(a.offlineWindow, "03:15 PM – 03:20 PM");
 });
 
 test("online sessions: every join/leave is kept (05:34–05:50, 06:02–…)", () => {
