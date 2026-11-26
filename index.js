@@ -45,6 +45,7 @@ const practiceRoutes = require("./Routes/UserRoutes/practiceRoute");
 const promoRoutes = require("./Routes/UserRoutes/promoRoute");
 const materialRoutes = require("./Routes/UserRoutes/materialRoute");
 const stageMessageRoutes = require("./Routes/UserRoutes/stageMessageRoute");
+const classRequestRoutes = require("./Routes/UserRoutes/classRequestRoute");
 const classModeRoutes = require("./Routes/UserRoutes/classModeRoute");
 const rtcRoutes = require("./Routes/UserRoutes/rtcRoute");
 
@@ -103,6 +104,7 @@ app.use("/api/practice", practiceRoutes);
 app.use("/api/promo", promoRoutes); // posters & reels on the student home screen
 app.use("/api/materials", materialRoutes); // 📚 study material PDFs (admin uploads, phones keep them offline)
 app.use("/api/stage-messages", stageMessageRoutes); // 📨 admin → messages for one stage / online / offline
+app.use("/api/requests", classRequestRoutes); // 🙋 student → trainer → manager requests
 app.use("/api/class-mode", classModeRoutes); // 🌧 rain day / 🎙 principal class
 app.use("/api/rtc", rtcRoutes); // 🎧 LiveKit audio classes (own server)
 
