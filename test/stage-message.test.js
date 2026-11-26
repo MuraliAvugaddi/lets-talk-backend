@@ -19,6 +19,9 @@ StageMessage.create = async (d) => {
 const pick = (q = {}) =>
   db.filter((x) => (q.student === null ? !x.student : q.student ? String(x.student) === String(q.student) : true));
 StageMessage.find = (q) => ({ sort: () => ({ limit: () => ({ lean: async () => pick(q).map((x) => ({ ...x })) }) }) });
+StageMessage.deleteMany = async (q) => {
+  db = db.filter((x) => !(x.kind === q.kind && !x.student && new Date(x.createdAt) >= q.createdAt.$gte));
+};
 StageMessage.findByIdAndDelete = (id) => ({
   lean: async () => {
     const d = db.find((x) => x._id === id);
@@ -93,6 +96,8 @@ test("notifications from the institute show on the Messages page (group + person
   try {
     await ctrl.record({ kind: "notice", title: "📢 Notice", message: "No class on Sunday", language: "All", mode: "online" });
     await ctrl.record({ kind: "fee", title: "✅ Fee received", message: "Thanks", student: "s77" });
+    // special class saved 3 times today → only the newest stays
+    for (const t of ["10 AM", "11 AM", "12 PM"]) await ctrl.record({ kind: "special", title: "🎙 Special", message: `Today at ${t}` });
   } finally {
     if (rs) Object.defineProperty(mongoose.connection, "readyState", rs);
     else delete mongoose.connection.readyState;
@@ -101,8 +106,9 @@ test("notifications from the institute show on the Messages page (group + person
   const me = { ...stu([2], [], "online"), _id: "s77" };
   const other = { ...stu([2], [], "online"), _id: "s88" };
   const mine = await list(me);
-  assert.deepEqual(mine.map((m) => m.kind).sort(), ["fee", "notice"]);
+  assert.deepEqual(mine.map((m) => m.kind).sort(), ["fee", "notice", "special"]);
+  assert.equal(mine.find((m) => m.kind === "special").message, "Today at 12 PM");
   assert.equal(mine.find((m) => m.kind === "fee").group, "Just for you");
-  assert.deepEqual((await list(other)).map((m) => m.kind), ["notice"]); // fee is only for s77
-  assert.equal((await list({ ...stu([2], [], "offline"), _id: "s99" })).length, 0); // online-only notice
+  assert.deepEqual((await list(other)).map((m) => m.kind).sort(), ["notice", "special"]); // fee is only for s77
+  assert.deepEqual((await list({ ...stu([2], [], "offline"), _id: "s99" })).map((m) => m.kind), ["special"]); // online-only notice
 });

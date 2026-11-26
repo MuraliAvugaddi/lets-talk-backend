@@ -107,6 +107,7 @@ const lagProbe = () => {
 };
 
 // ---------------- sockets (like the apps) ----------------
+const heard = { assembly_live: 0, assembly_ended: 0, stage_message: 0 }; // live events the phones received
 const openSockets = async () => {
   let io;
   try {
@@ -130,6 +131,7 @@ const openSockets = async () => {
               resolve();
             });
             sock.on("connect_error", () => resolve());
+            for (const ev of Object.keys(heard)) sock.on(ev, () => heard[ev]++);
             setTimeout(resolve, 20000);
             list.push(sock);
           }, (i % 200) * 10);
@@ -148,6 +150,7 @@ const studentFlow = async (s) => {
   await call("GET materials", "GET", "/api/materials", s.token);
   await call("GET stage-messages", "GET", "/api/stage-messages", s.token);
   await call("GET fee my-status", "GET", `/api/fee/my-status?userId=${s.id}`, s.token);
+  await call("GET requests/mine", "GET", "/api/requests/mine", s.token); // 🙋 message my trainer
   const prep = await call("POST rtc/prepare-call", "POST", "/api/rtc/prepare-call", s.token, {
     language: s.language,
     stage: s.stage,
@@ -255,8 +258,63 @@ const scenarioAssembly = async () => {
     })
   );
   console.log(`   all joined in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  // trainers are in the special class too
+  const room = (await call("POST rtc/prepare-call (host check)", "POST", "/api/rtc/prepare-call", admin.token, { type: "assembly" })).data.callId;
+  await Promise.all(
+    trainers.map(async (t) => {
+      await call("POST rtc/room-token (trainer, live)", "POST", "/api/rtc/room-token", t.token, { room });
+      await call("POST join-online-class (trainer assembly)", "POST", "/api/user/join-online-class", t.token, { assembly: true });
+    })
+  );
+  // Sir ends the class → nobody (trainer or student) may re-open the room
+  await call("POST rtc/room/end (host)", "POST", "/api/rtc/room/end", admin.token, { room });
+  await sleep(500);
+  let reopened = 0;
+  await Promise.all(
+    trainers.map(async (t) => {
+      const r = await call("POST rtc/room-token (trainer, after end)", "POST", "/api/rtc/room-token", t.token, { room });
+      if (r.status === 200) reopened++;
+    })
+  );
+  const endEnd = await call("POST rtc/room/end (trainer tries)", "POST", "/api/rtc/room/end", trainers[0].token, { room });
+  console.log(`   after "End": trainers that could re-join = ${reopened} (must be 0) · trainer allowed to end = ${endEnd.status === 200 ? "YES ❌" : "no ✅"}`);
   await call("POST class-mode/assembly OFF", "POST", "/api/class-mode/assembly", admin.token, { active: false });
+  await sleep(2000);
+  if (SOCKETS) console.log(`   📡 live events on ${students.length} phones: "Sir is live" ${heard.assembly_live} · "class ended" ${heard.assembly_ended}`);
   report("B · special class burst");
+};
+
+// ---------------- scenario C: student requests (message my trainer) ----------------
+const scenarioRequests = async () => {
+  const n = Math.min(400, students.length);
+  console.log(`\n▶ Scenario C: ${n} students message their trainer, trainers open the inbox and accept`);
+  await Promise.all(
+    students.slice(0, n).map(async (s) => {
+      await sleep(Math.random() * 10000);
+      await call("GET requests/my-classes", "GET", "/api/requests/my-classes", s.token);
+      await call("POST requests (new)", "POST", "/api/requests", s.token, {
+        language: s.language,
+        stage: s.stage,
+        type: "other_batch",
+        preferredBatch: "06:30 PM - 08:00 PM",
+        message: "load test",
+      });
+    })
+  );
+  let accepted = 0;
+  await Promise.all(
+    trainers.map(async (t) => {
+      const inbox = await call("GET requests/trainer", "GET", "/api/requests/trainer", t.token);
+      const list = (inbox.data && inbox.data.requests) || [];
+      for (const r of list.slice(0, 3)) {
+        const a = await call("POST requests/:id/accept", "POST", `/api/requests/${r.id}/accept`, t.token, { text: "OK" });
+        if (a.status === 200) accepted++;
+      }
+    })
+  );
+  await call("GET requests/manager", "GET", "/api/requests/manager?status=all", admin.token);
+  console.log(`   accepted by trainers: ${accepted}`);
+  report("C · student requests");
 };
 
 (async () => {
@@ -269,6 +327,7 @@ const scenarioAssembly = async () => {
   const socks = SOCKETS ? await openSockets() : [];
   if (process.env.ONLY !== "B") await scenarioClass();
   if (ASSEMBLY && process.env.ONLY !== "A") await scenarioAssembly();
+  if (process.env.ONLY !== "A" && process.env.ONLY !== "B") await scenarioRequests();
   socks.forEach((s) => s.close());
   console.log("\n✅ Done");
   process.exit(0);

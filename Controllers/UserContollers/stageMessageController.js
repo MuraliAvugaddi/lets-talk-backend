@@ -222,6 +222,13 @@ const record = async ({ kind = "message", title = "", message = "", language = "
     io = io || require("../../utils/realtime").get();
     const text = String(message || "").trim();
     if (!text) return null;
+    // 🎙 the admin saves the special class again (new time / title) → keep ONE for today
+    if (kind === "special" && !student) {
+      // start of today in India (IST = UTC + 5:30)
+      const ist = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+      const since = new Date(`${ist}T00:00:00+05:30`);
+      await StageMessage.deleteMany({ kind: "special", student: null, createdAt: { $gte: since } });
+    }
     const doc = await StageMessage.create({
       kind,
       title: String(title || "").slice(0, 120),
